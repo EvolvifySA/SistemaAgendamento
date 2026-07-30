@@ -154,6 +154,11 @@ export default function App() {
     }
   };
 
+  const handleUpdatePatient = (updatedPatient: Patient) => {
+    const updated = patients.map(p => p.id === updatedPatient.id ? updatedPatient : p);
+    savePatients(updated);
+  };
+
   const handleDeletePatient = (patientId: string) => {
     const updatedPatients = patients.filter(p => p.id !== patientId);
     savePatients(updatedPatients);
@@ -514,6 +519,7 @@ export default function App() {
               patients={patients}
               appointments={appointments}
               onAddPatient={handleAddPatient}
+              onEditPatient={handleUpdatePatient}
               onOpenNewAppointmentForPatient={handleOpenNewAppointmentForPatient}
               onOpenReturnForPatient={handleOpenReturnForPatient}
               onDeletePatient={handleDeletePatient}

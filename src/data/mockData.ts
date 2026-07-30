@@ -102,7 +102,7 @@ export const INITIAL_PROFESSIONALS: Professional[] = [
     id: "prof-2",
     name: "Dra. Francisca",
     specialty: "Dentista",
-    phone: "",
+    phone: "+55 83 9987-0035",
     email: "fran_ramalho@yahoo.com.br",
     color: "#C17A63",
     active: true,

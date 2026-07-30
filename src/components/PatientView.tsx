@@ -16,7 +16,8 @@ import {
   ClipboardList,
   Trash2,
   MapPin,
-  Loader2
+  Loader2,
+  Pencil
 } from "lucide-react";
 
 const formatCpf = (value: string) => {
@@ -42,6 +43,7 @@ interface PatientViewProps {
   patients: Patient[];
   appointments: Appointment[];
   onAddPatient: (patient: Omit<Patient, "id" | "absencesCount" | "history">) => void;
+  onEditPatient: (patient: Patient) => void;
   onOpenNewAppointmentForPatient: (patientId: string) => void;
   onOpenReturnForPatient: (patientId: string) => void;
   onDeletePatient: (patientId: string) => void;
@@ -51,6 +53,7 @@ export const PatientView: React.FC<PatientViewProps> = ({
   patients,
   appointments,
   onAddPatient,
+  onEditPatient,
   onOpenNewAppointmentForPatient,
   onOpenReturnForPatient,
   onDeletePatient
@@ -58,6 +61,7 @@ export const PatientView: React.FC<PatientViewProps> = ({
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedPatient, setSelectedPatient] = useState<Patient | null>(patients[0] || null);
   const [showAddModal, setShowAddModal] = useState(false);
+  const [editingPatientId, setEditingPatientId] = useState<string | null>(null);
   const [deleteConfirmState, setDeleteConfirmState] = useState<{
     isOpen: boolean;
     patientId: string;
@@ -93,6 +97,38 @@ export const PatientView: React.FC<PatientViewProps> = ({
     setFormCity("");
     setFormState("");
     setCepError("");
+  };
+
+  const resetForm = () => {
+    setFormName("");
+    setFormPhone("");
+    setFormBirth("");
+    setFormCpf("");
+    setFormEmail("");
+    resetAddressFields();
+    setFormImportant("");
+    setFormQuick("");
+    setEditingPatientId(null);
+  };
+
+  const openEditModal = (patient: Patient) => {
+    setFormName(patient.name);
+    setFormPhone(patient.phone);
+    setFormBirth(patient.birthdate || "");
+    setFormCpf(patient.cpf || "");
+    setFormEmail(patient.email || "");
+    setFormCep(patient.address?.cep || "");
+    setFormStreet(patient.address?.street || "");
+    setFormNumber(patient.address?.number || "");
+    setFormComplement(patient.address?.complement || "");
+    setFormNeighborhood(patient.address?.neighborhood || "");
+    setFormCity(patient.address?.city || "");
+    setFormState(patient.address?.state || "");
+    setCepError("");
+    setFormImportant(patient.importantNotes || "");
+    setFormQuick(patient.quickNotes || "");
+    setEditingPatientId(patient.id);
+    setShowAddModal(true);
   };
 
   const handleCepBlur = async () => {
@@ -141,6 +177,40 @@ export const PatientView: React.FC<PatientViewProps> = ({
         }
       : undefined;
 
+    if (editingPatientId) {
+      const original = patients.find(p => p.id === editingPatientId);
+      if (original) {
+        onEditPatient({
+          ...original,
+          name: formName,
+          phone: formPhone,
+          birthdate: formBirth || undefined,
+          cpf: formCpf || undefined,
+          email: formEmail || undefined,
+          address,
+          importantNotes: formImportant,
+          quickNotes: formQuick
+        });
+        if (selectedPatient?.id === editingPatientId) {
+          setSelectedPatient({
+            ...original,
+            name: formName,
+            phone: formPhone,
+            birthdate: formBirth || undefined,
+            cpf: formCpf || undefined,
+            email: formEmail || undefined,
+            address,
+            importantNotes: formImportant,
+            quickNotes: formQuick
+          });
+        }
+      }
+      setShowAddModal(false);
+      resetForm();
+      alert("✨ Ficha do paciente atualizada com sucesso!");
+      return;
+    }
+
     onAddPatient({
       name: formName,
       phone: formPhone,
@@ -153,15 +223,7 @@ export const PatientView: React.FC<PatientViewProps> = ({
     });
 
     setShowAddModal(false);
-    // Reset
-    setFormName("");
-    setFormPhone("");
-    setFormBirth("");
-    setFormCpf("");
-    setFormEmail("");
-    resetAddressFields();
-    setFormImportant("");
-    setFormQuick("");
+    resetForm();
     alert("✨ Paciente cadastrado com sucesso! Já está disponível para consultas e buscas.");
   };
 
@@ -187,7 +249,7 @@ export const PatientView: React.FC<PatientViewProps> = ({
 
         {/* Create patient button */}
         <button
-          onClick={() => setShowAddModal(true)}
+          onClick={() => { resetForm(); setShowAddModal(true); }}
           className="flex items-center justify-center gap-2 px-5 py-2.5 bg-[#5A5A40] text-white rounded-full text-xs font-semibold shadow-md hover:bg-[#474732] active:scale-95 transition-all self-start sm:self-auto"
         >
           <UserPlus className="w-4 h-4" />
@@ -389,7 +451,15 @@ export const PatientView: React.FC<PatientViewProps> = ({
                     <span>Agendar Retorno</span>
                   </button>
                 </div>
-                
+
+                <button
+                  onClick={() => openEditModal(selectedPatient)}
+                  className="w-full flex items-center justify-center gap-1.5 px-4 py-2.5 bg-white text-[#5A5A40] border border-[#D8D8C0] rounded-xl text-xs font-bold hover:bg-[#F5F5F0] active:scale-95 transition-all"
+                >
+                  <Pencil className="w-3.5 h-3.5 text-[#C17A63]" />
+                  <span>Editar Ficha Cadastral</span>
+                </button>
+
                 <button
                   onClick={() => setDeleteConfirmState({
                     isOpen: true,
@@ -419,9 +489,11 @@ export const PatientView: React.FC<PatientViewProps> = ({
           <div className="bg-white rounded-[32px] border border-[#E5E5E0] shadow-2xl w-full max-w-lg p-8 space-y-6 animate-scale-up max-h-[90vh] overflow-y-auto">
             
             <div className="flex justify-between items-center border-b border-[#F5F5F0] pb-4">
-              <h3 className="font-serif text-2xl text-[#5A5A40] italic font-semibold">Ficha de Cadastro de Paciente</h3>
-              <button 
-                onClick={() => setShowAddModal(false)}
+              <h3 className="font-serif text-2xl text-[#5A5A40] italic font-semibold">
+                {editingPatientId ? "Editar Ficha do Paciente" : "Ficha de Cadastro de Paciente"}
+              </h3>
+              <button
+                onClick={() => { setShowAddModal(false); resetForm(); }}
                 className="text-xs text-[#A0A090] hover:text-[#5A5A40] font-bold"
               >
                 Voltar
@@ -647,7 +719,7 @@ export const PatientView: React.FC<PatientViewProps> = ({
               <div className="flex gap-3 pt-4">
                 <button
                   type="button"
-                  onClick={() => setShowAddModal(false)}
+                  onClick={() => { setShowAddModal(false); resetForm(); }}
                   className="flex-1 px-4 py-3 border border-[#D8D8C0] text-[#5A5A40] rounded-2xl text-xs font-semibold hover:bg-[#F5F5F0] transition-all"
                 >
                   Voltar
@@ -656,7 +728,7 @@ export const PatientView: React.FC<PatientViewProps> = ({
                   type="submit"
                   className="flex-1 px-4 py-3 bg-[#5A5A40] text-white rounded-2xl text-xs font-bold hover:bg-[#474732] shadow-md transition-all"
                 >
-                  Salvar paciente
+                  {editingPatientId ? "Salvar alterações" : "Salvar paciente"}
                 </button>
               </div>
 
