@@ -1,0 +1,59 @@
+@import url('https://fonts.googleapis.com/css2?family=EB+Garamond:ital,wght@0,400..800;1,400..800&family=Plus+Jakarta+Sans:ital,wght@0,200..800;1,200..800&family=JetBrains+Mono:ital,wght@0,100..800;1,100..800&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-serif: "EB Garamond", Georgia, serif;
+  --font-sans: "Plus Jakarta Sans", "Inter", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+
+  /* Natural Tones Palette mappings */
+  --color-background: #F5F5F0;
+  --color-on-surface: #1A1A1A;
+  --color-on-surface-variant: #707060;
+
+  --color-surface: #FFFFFF;
+  --color-surface-container: #F0F0E8;
+  --color-surface-container-low: #FBFBFA;
+  --color-surface-container-lowest: #FFFFFF;
+
+  --color-primary: #5A5A40;
+  --color-primary-container: #474732;
+  --color-on-primary: #FFFFFF;
+
+  --color-secondary: #C17A63;
+  --color-secondary-container: #F2F2E9;
+  --color-on-secondary: #FFFFFF;
+  --color-on-secondary-container: #5A5A40;
+
+  --color-outline: #D8D8C0;
+  --color-outline-variant: #E5E5E0;
+}
+
+/* Base style resets to fit the Natural Tones feel */
+body {
+  background-color: #F5F5F0;
+  color: #1A1A1A;
+  font-family: var(--font-sans);
+}
+
+/* Custom transitions and scrollbar */
+* {
+  transition-property: color, background-color, border-color;
+  transition-duration: 150ms;
+  transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: #F5F5F0;
+}
+::-webkit-scrollbar-thumb {
+  background: #D8D8C0;
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #A0A090;
+}

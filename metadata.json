@@ -1,0 +1,8 @@
+{
+  "name": "Sistema de Gestão - Francisca e Márcia Consultório Odontológico",
+  "description": "Portal de gestão clínica do Francisca e Márcia Consultório Odontológico LTDA.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
