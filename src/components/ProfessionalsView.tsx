@@ -6,9 +6,6 @@ import {
   Edit2, 
   Mail, 
   Phone, 
-  Clock, 
-  Calendar, 
-  Check, 
   AlertCircle, 
   User, 
   Sparkles,
@@ -224,7 +221,7 @@ export function ProfessionalsView({
             Profissionais & Especialistas
           </h1>
           <p className="text-xs text-[#707060] mt-1">
-            Configure as dentistas ativas, especialidades, horários de atendimento próprio e durações padrões de consultas.
+            Configure dados cadastrais, status no painel e integração Cal.com de cada dentista.
           </p>
         </div>
 
@@ -244,7 +241,7 @@ export function ProfessionalsView({
         <div className="bg-[#FBFBFA] border border-[#E5E5D8] rounded-2xl p-4 flex items-start gap-3">
           <AlertCircle className="w-5 h-5 text-[#C17A63] shrink-0 mt-0.5" />
           <div className="text-xs text-[#707060] leading-relaxed">
-            <span className="font-bold text-[#1A1A1A]">Modo de Visualização:</span> Como membro da recepção ou corpo clínico, você pode visualizar e conferir os dados cadastrais, horários e cores de cada dentista. Alterações e novos cadastros requerem privilégios de <strong className="text-[#5A5A40]">Administrador</strong>.
+            <span className="font-bold text-[#1A1A1A]">Modo de Visualização:</span> Como membro da recepção ou corpo clínico, você pode visualizar os dados cadastrais e a conexão Cal.com de cada dentista. Alterações e novos cadastros requerem privilégios de <strong className="text-[#5A5A40]">Administrador</strong>.
           </div>
         </div>
       )}
@@ -317,9 +314,6 @@ export function ProfessionalsView({
                     {hasTimeOffConnection(prof) ? <CheckCircle2 className="w-3 h-3" /> : <XCircle className="w-3 h-3" />}
                     Folgas
                   </span>
-                  <span className="text-[10px] text-[#A0A090] font-mono">
-                    Duração: {prof.defaultDuration} min
-                  </span>
                 </div>
               </div>
 
@@ -337,37 +331,16 @@ export function ProfessionalsView({
                   </div>
                 </div>
 
-                {/* Hours and Days */}
                 <div className="bg-[#FBFBFA] rounded-2xl p-3.5 border border-[#F0F0E8] space-y-2.5">
-                  <div className="flex items-center gap-2 text-[#5A5A40]">
-                    <Clock className="w-4 h-4" />
-                    <span className="font-bold">Horário de Atendimento:</span>
+                  <div className="flex flex-col sm:flex-row sm:items-center gap-2 text-[#5A5A40]">
+                    <span className="font-bold">Agenda oficial:</span>
                     <span className="font-mono bg-white px-2 py-0.5 rounded-md border border-[#E5E5D8] font-bold text-[11px]">
-                      {prof.workingHoursStart} às {prof.workingHoursEnd}
+                      {prof.calUsername ? `cal.com/${prof.calUsername}` : "Cal.com não conectado"}
                     </span>
                   </div>
-
-                  <div className="flex items-center gap-2">
-                    <Calendar className="w-4 h-4 text-[#A0A090]" />
-                    <span className="font-semibold text-[#5A5A40]">Dias:</span>
-                    <div className="flex gap-1 flex-wrap">
-                      {WEEK_DAYS.map(day => {
-                        const isWorking = prof.workingDays.includes(day.value);
-                        return (
-                          <span 
-                            key={day.value}
-                            className={`text-[9px] font-bold px-2 py-0.5 rounded ${
-                              isWorking 
-                                ? "bg-[#5A5A40] text-white" 
-                                : "bg-[#E5E5E0] text-[#A0A090] line-through decoration-1"
-                            }`}
-                          >
-                            {day.label}
-                          </span>
-                        );
-                      })}
-                    </div>
-                  </div>
+                  <p className="text-[10px] text-[#707060] leading-relaxed">
+                    O status ativa/inativa controla a exibição desta dentista no painel. Disponibilidade, duração e dias de atendimento continuam sendo configurados no Cal.com.
+                  </p>
                 </div>
 
                 {/* Internal observations */}
@@ -652,78 +625,6 @@ export function ProfessionalsView({
                 </div>
               </div>
 
-              {/* Working Hours & Duration */}
-              <div className="grid grid-cols-3 gap-3">
-                <div>
-                  <label className="block text-[9px] font-bold text-[#707060] uppercase tracking-wider mb-1">
-                    Entrada
-                  </label>
-                  <input
-                    type="time"
-                    value={workingHoursStart}
-                    onChange={(e) => setWorkingHoursStart(e.target.value)}
-                    className="w-full bg-[#F5F5F0] border border-[#E5E5E0] rounded-2xl px-3 py-2.5 text-xs font-mono"
-                    required
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-[9px] font-bold text-[#707060] uppercase tracking-wider mb-1">
-                    Saída
-                  </label>
-                  <input
-                    type="time"
-                    value={workingHoursEnd}
-                    onChange={(e) => setWorkingHoursEnd(e.target.value)}
-                    className="w-full bg-[#F5F5F0] border border-[#E5E5E0] rounded-2xl px-3 py-2.5 text-xs font-mono"
-                    required
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-[9px] font-bold text-[#707060] uppercase tracking-wider mb-1">
-                    Duração Padrão
-                  </label>
-                  <select
-                    value={defaultDuration}
-                    onChange={(e) => setDefaultDuration(Number(e.target.value))}
-                    className="w-full bg-[#F5F5F0] border border-[#E5E5E0] rounded-2xl px-3 py-2.5 text-xs font-semibold"
-                  >
-                    <option value={20}>20m</option>
-                    <option value={30}>30m</option>
-                    <option value={45}>45m</option>
-                    <option value={60}>60m</option>
-                    <option value={90}>90m</option>
-                  </select>
-                </div>
-              </div>
-
-              {/* Working Days Selector */}
-              <div>
-                <label className="block text-[10px] font-bold text-[#707060] uppercase tracking-wider mb-1">
-                  Dias de Atendimento na Semana
-                </label>
-                <div className="flex gap-1.5 flex-wrap mt-1">
-                  {WEEK_DAYS.map(day => {
-                    const isSelected = workingDays.includes(day.value);
-                    return (
-                      <button
-                        key={day.value}
-                        type="button"
-                        onClick={() => toggleDay(day.value)}
-                        className={`text-xs font-semibold px-3 py-2 rounded-xl transition-all border ${
-                          isSelected 
-                            ? "bg-[#5A5A40] border-[#5A5A40] text-white shadow-sm" 
-                            : "bg-[#F5F5F0] border-[#E5E5E0] text-[#707060] hover:bg-[#EAEADF]"
-                        }`}
-                      >
-                        {day.label}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-
               {/* Inativo / Ativo Toggle */}
               <div className="flex items-center gap-2 py-1">
                 <input
@@ -734,7 +635,7 @@ export function ProfessionalsView({
                   className="w-4 h-4 text-[#5A5A40] border-[#E5E5E0] rounded focus:ring-[#5A5A40] cursor-pointer"
                 />
                 <label htmlFor="activeToggle" className="text-xs font-bold text-[#1A1A1A] cursor-pointer selection:bg-transparent">
-                  Profissional ativa (disponível para agendamentos)
+                  Dentista ativa no painel (não altera disponibilidade no Cal.com)
                 </label>
               </div>
 

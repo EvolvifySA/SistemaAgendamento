@@ -41,8 +41,14 @@ export function MetricsView({
   const [typeFilter, setTypeFilter] = useState<string>("todos");
 
   // Custom range dates (used if personalizados)
-  const today = new Date();
-  const todayIso = today.toISOString().slice(0, 10);
+  const todayIso = new Intl.DateTimeFormat("en-CA", {
+    timeZone: settings.timezone || "America/Sao_Paulo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).format(new Date());
+  const [todayYear, todayMonth, todayDay] = todayIso.split("-").map(Number);
+  const today = new Date(todayYear, todayMonth - 1, todayDay);
   const [customStartDate, setCustomStartDate] = useState(todayIso);
   const [customEndDate, setCustomEndDate] = useState(todayIso);
 
@@ -114,31 +120,10 @@ export function MetricsView({
       ? Math.round(((atendidos + confirmados) / activeExpectedSpots) * 100) 
       : 100;
 
-    const activeProfsCount = profFilter === "todas" 
-      ? professionals.filter(p => p.active).length 
-      : 1;
-
-    const daysCount = periodFilter === "hoje" ? 1 : periodFilter === "semana" ? 7 : periodFilter === "mes" ? endOfMonth.getDate() : Math.max(1, Math.ceil((new Date(customEndDate).getTime() - new Date(customStartDate).getTime()) / 86400000) + 1);
-    const selectedProfs = profFilter === "todas" ? professionals.filter(p => p.active) : professionals.filter(p => p.id === profFilter);
-    const dailyAvailableMinutes = selectedProfs.reduce((sum, prof) => {
-      const [startH, startM] = prof.workingHoursStart.split(":").map(Number);
-      const [endH, endM] = prof.workingHoursEnd.split(":").map(Number);
-      return sum + Math.max(0, (endH * 60 + endM) - (startH * 60 + startM));
-    }, 0);
-    const totalMinutesAvailable = Math.max(0, dailyAvailableMinutes * daysCount);
     const occupiedMinutes = filteredAppointments
       .filter(a => a.status !== "Cancelado")
       .reduce((sum, a) => sum + (a.duration || 30), 0);
-
-    const occupancyRate = Math.min(100, totalMinutesAvailable > 0 
-      ? Math.round((occupiedMinutes / totalMinutesAvailable) * 100) 
-      : 0);
-
-    // Free slots estimate
-    const slotDuration = settings.defaultDuration || 30;
-    const totalSlots = Math.round(totalMinutesAvailable / slotDuration);
-    const occupiedSlotsCount = filteredAppointments.filter(a => a.status !== "Cancelado").length;
-    const freeSlots = Math.max(0, totalSlots - occupiedSlotsCount);
+    const calBookings = filteredAppointments.filter(a => a.source === "cal.com" || a.calBookingUid).length;
 
     // New patients (registered in current period or having first appointment as "Primeira Consulta" in period)
     const newPatients = filteredAppointments.filter(a => a.type === "Primeira Consulta" && a.status !== "Cancelado").length;
@@ -152,8 +137,7 @@ export function MetricsView({
       faltas,
       agendados,
       comparecimentoRate,
-      occupancyRate,
-      freeSlots,
+      calBookings,
       newPatients,
       retornos,
       occupiedMinutes
@@ -179,15 +163,7 @@ export function MetricsView({
 
       const avgDuration = atendidos > 0 ? Math.round(totalMinutes / atendidos) : 0;
 
-      const daysCount = periodFilter === "hoje" ? 1 : periodFilter === "semana" ? 7 : periodFilter === "mes" ? endOfMonth.getDate() : Math.max(1, Math.ceil((new Date(customEndDate).getTime() - new Date(customStartDate).getTime()) / 86400000) + 1);
-      const [startH, startM] = prof.workingHoursStart.split(":").map(Number);
-      const [endH, endM] = prof.workingHoursEnd.split(":").map(Number);
-      const availableMins = Math.max(0, ((endH * 60 + endM) - (startH * 60 + startM)) * daysCount);
-      const occupiedMins = profApps
-        .filter(a => a.status !== "Cancelado")
-        .reduce((sum, a) => sum + (a.duration || 30), 0);
-
-      const occupancy = Math.min(100, availableMins > 0 ? Math.round((occupiedMins / availableMins) * 100) : 0);
+      const activeCount = profApps.filter(a => a.status !== "Cancelado").length;
 
       return {
         ...prof,
@@ -198,7 +174,7 @@ export function MetricsView({
         cancelados,
         retornos,
         novos,
-        occupancy,
+        occupancy: activeCount,
         totalMinutes,
         avgDuration
       };
@@ -280,7 +256,7 @@ export function MetricsView({
             Métricas de Atendimento
           </h1>
           <p className="text-xs text-[#707060] mt-1">
-            Indicadores de produtividade da clínica, taxa de comparecimento, ocupação e performance por profissional.
+            Indicadores de produtividade da clínica, taxa de comparecimento e performance por profissional.
           </p>
         </div>
       </div>
@@ -495,27 +471,27 @@ export function MetricsView({
           </div>
         </div>
 
-        {/* Horários Livres */}
+        {/* Bookings Cal.com */}
         <div className="bg-white border border-[#E5E5E0] rounded-2xl p-4 flex flex-col justify-between shadow-sm min-h-[110px]">
           <div className="flex justify-between items-start text-[#A0A090]">
-            <span className="text-[10px] font-bold uppercase tracking-wider">Vagas Livres</span>
+            <span className="text-[10px] font-bold uppercase tracking-wider">Bookings Cal.com</span>
             <Calendar className="w-4 h-4 text-[#5A5A40]" />
           </div>
           <div className="mt-2">
-            <p className="text-2xl font-serif italic font-bold text-[#5A5A40]">{stats.freeSlots}</p>
-            <p className="text-[9px] text-[#707060] mt-0.5 font-medium">Horários vagos aprox.</p>
+            <p className="text-2xl font-serif italic font-bold text-[#5A5A40]">{stats.calBookings}</p>
+            <p className="text-[9px] text-[#707060] mt-0.5 font-medium">Registros sincronizados</p>
           </div>
         </div>
 
-        {/* Taxa de Ocupação */}
+        {/* Agendamentos ativos */}
         <div className="bg-white border border-[#E5E5E0] rounded-2xl p-4 flex flex-col justify-between shadow-sm min-h-[110px]">
           <div className="flex justify-between items-start text-[#A0A090]">
-            <span className="text-[10px] font-bold uppercase tracking-wider">Ocupação Agenda</span>
+            <span className="text-[10px] font-bold uppercase tracking-wider">Agendamentos Ativos</span>
             <TrendingUp className="w-4 h-4 text-[#C17A63]" />
           </div>
           <div className="mt-2">
-            <p className="text-2xl font-serif italic font-bold text-[#C17A63]">{stats.occupancyRate}%</p>
-            <p className="text-[9px] text-[#707060] mt-0.5 font-medium">Horas preenchidas</p>
+            <p className="text-2xl font-serif italic font-bold text-[#C17A63]">{stats.atendidos + stats.confirmados + stats.faltas + stats.agendados}</p>
+            <p className="text-[9px] text-[#707060] mt-0.5 font-medium">Não cancelados no período</p>
           </div>
         </div>
 
@@ -712,7 +688,7 @@ export function MetricsView({
                   <th className="py-3 px-4 text-center">Confirmados</th>
                   <th className="py-3 px-4 text-center">Faltas</th>
                   <th className="py-3 px-4 text-center">Cancelados</th>
-                  <th className="py-3 px-4 text-center">Ocupação</th>
+                  <th className="py-3 px-4 text-center">Ativos</th>
                   <th className="py-3 px-4 text-center">Novos Pacs</th>
                   <th className="py-3 px-4 text-right">Tempo Atendendo</th>
                 </tr>
@@ -743,9 +719,9 @@ export function MetricsView({
                     </td>
                     <td className="py-3.5 px-4 text-center">
                       <div className="flex items-center justify-center gap-1.5">
-                        <span className="font-bold">{prof.occupancy}%</span>
+                        <span className="font-bold">{prof.occupancy}</span>
                         <div className="w-8 h-1 bg-[#F5F5F0] rounded-full overflow-hidden hidden sm:block">
-                          <div className="bg-[#C17A63] h-full" style={{ width: `${prof.occupancy}%` }} />
+                          <div className="bg-[#C17A63] h-full" style={{ width: `${Math.min(100, prof.occupancy * 12)}%` }} />
                         </div>
                       </div>
                     </td>
@@ -774,7 +750,7 @@ export function MetricsView({
                   <p>Confirmados: <strong className="text-blue-600">{prof.confirmados}</strong></p>
                   <p>Faltas: <strong className="text-amber-700">{prof.faltas}</strong></p>
                   <p>Cancelados: <strong className="text-rose-600">{prof.cancelados}</strong></p>
-                  <p>Ocupação: <strong>{prof.occupancy}%</strong></p>
+                  <p>Ativos: <strong>{prof.occupancy}</strong></p>
                   <p>Retornos: <strong>{prof.retornos}</strong></p>
                   <p>Tempo total: <strong>{Math.floor(prof.totalMinutes / 60)}h {prof.totalMinutes % 60}m</strong></p>
                   <p>Tempo Médio/Atend: <strong>{prof.avgDuration} min</strong></p>

@@ -99,8 +99,10 @@ export default function App() {
         setAppointments(data.appointments);
         setUsers(data.users);
         setProfessionals(data.professionals);
-        setContacts(linkContactsToPatients(data.contacts.length ? data.contacts : INITIAL_CONTACTS, normalizedPatients));
-        setTimeOff(data.timeOff.length ? data.timeOff : INITIAL_TIME_OFF);
+        const contactsSource = data.mode === "demo" && data.contacts.length === 0 ? INITIAL_CONTACTS : data.contacts;
+        const timeOffSource = data.mode === "demo" && data.timeOff.length === 0 ? INITIAL_TIME_OFF : data.timeOff;
+        setContacts(linkContactsToPatients(contactsSource, normalizedPatients));
+        setTimeOff(timeOffSource);
         setSettings(data.settings);
         setDataMode(data.mode);
 
@@ -433,8 +435,6 @@ export default function App() {
     } else {
       setActiveView("agenda");
     }
-    alert(`🔍 Busca Clínica: Pesquisando por "${globalSearch}". Exibindo resultados correspondentes.`);
-    setGlobalSearch("");
   };
 
   if (loadingData) {
@@ -599,11 +599,7 @@ export default function App() {
             </nav>
           </div>
 
-          {/* Footnotes representation */}
-          <div className="p-3 bg-[#FBFBFA] rounded-2xl border border-[#F0F0E8] text-[10px] text-[#707060] leading-relaxed">
-            <p className="font-bold text-[#5A5A40]">🔐 Sistema Clínico Homologado</p>
-            <p className="mt-0.5 opacity-80">Dados operacionais servidos pelo backend, com credenciais sensíveis fora do frontend.</p>
-          </div>
+          <div />
         </aside>
 
         {/* Main Content Area dynamically loaded */}

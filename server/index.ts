@@ -457,6 +457,14 @@ app.post("/api/professionals/:id/time-off", async (req, res) => {
     const data = await bootstrap();
     const professional = data.professionals.find((item) => item.id === req.params.id);
     if (!professional) return res.status(404).send("Profissional nao encontrada.");
+    const startDate = new Date(req.body.start);
+    const endDate = new Date(req.body.end);
+    if (Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime())) {
+      return res.status(400).send("Inicio e fim da folga precisam ser datas validas.");
+    }
+    if (endDate.getTime() <= startDate.getTime()) {
+      return res.status(400).send("O fim da folga precisa ser depois do inicio.");
+    }
 
     let calOooId: number | undefined;
     const accountType = professional.calAccountType || "individual";
@@ -465,7 +473,7 @@ app.post("/api/professionals/:id/time-off", async (req, res) => {
       if (!token) {
         return res.status(409).send(`Cal.com nao conectado: configure ${professional.calApiKeyEnvVar || "CAL_API_KEY_DENTISTA"} no .env do backend.`);
       }
-      const response = await calRequest("/v2/me/ooo", { method: "POST", body: JSON.stringify(req.body) }, token);
+      const response = await calRequest("/v2/me/ooo", { method: "POST", body: JSON.stringify(req.body) }, token, false);
       calOooId = response?.data?.id;
     } else {
       const missingCalConfig = !professional.calUserId || (!professional.calTeamId && !professional.calOrgId);
@@ -518,7 +526,7 @@ app.delete("/api/professionals/:id/time-off/:entryId", async (req, res) => {
       if (accountType === "individual") {
         const token = getProfessionalCalToken(professional);
         if (token) {
-          await calRequest(`/v2/me/ooo/${entry.calOooId}`, { method: "DELETE" }, token);
+          await calRequest(`/v2/me/ooo/${entry.calOooId}`, { method: "DELETE" }, token, false);
         }
       } else {
         const base = accountType === "organization"

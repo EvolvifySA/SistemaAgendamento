@@ -18,8 +18,9 @@ export const TimeOffView: React.FC<TimeOffViewProps> = ({
   onDeleteTimeOff
 }) => {
   const visibleProfessionals = useMemo(() => {
-    if (currentUser.role !== "Doutora") return professionals;
-    const own = professionals.find(professional => professional.email === currentUser.email);
+    const activeProfessionals = professionals.filter(professional => professional.active);
+    if (currentUser.role !== "Doutora") return activeProfessionals;
+    const own = activeProfessionals.find(professional => professional.email === currentUser.email);
     return own ? [own] : [];
   }, [currentUser, professionals]);
 
@@ -28,6 +29,7 @@ export const TimeOffView: React.FC<TimeOffViewProps> = ({
   const [end, setEnd] = useState("");
   const [reason, setReason] = useState<TimeOffEntry["reason"]>("vacation");
   const [notes, setNotes] = useState("");
+  const [formError, setFormError] = useState("");
   const selectedProfessional = visibleProfessionals.find(professional => professional.id === professionalId);
   const calReady = Boolean(
     selectedProfessional?.calAccountType === "individual"
@@ -37,11 +39,26 @@ export const TimeOffView: React.FC<TimeOffViewProps> = ({
 
   const handleSubmit = (event: React.FormEvent) => {
     event.preventDefault();
-    if (!professionalId || !start || !end || !calReady) return;
+    setFormError("");
+    if (!professionalId || !start || !end) return;
+    if (!calReady) {
+      setFormError("Cal.com não conectado para folgas desta dentista.");
+      return;
+    }
+    const startDate = new Date(start);
+    const endDate = new Date(end);
+    if (Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime())) {
+      setFormError("Informe início e fim válidos.");
+      return;
+    }
+    if (endDate.getTime() <= startDate.getTime()) {
+      setFormError("O fim da folga precisa ser depois do início.");
+      return;
+    }
     onSaveTimeOff({
       professionalId,
-      start: new Date(start).toISOString(),
-      end: new Date(end).toISOString(),
+      start: startDate.toISOString(),
+      end: endDate.toISOString(),
       reason,
       notes
     });
@@ -98,6 +115,11 @@ export const TimeOffView: React.FC<TimeOffViewProps> = ({
           Criar bloqueio
         </button>
         <textarea value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Observações internas" className="md:col-span-5 bg-[#F5F5F0] border border-[#E5E5E0] rounded-2xl px-4 py-3 text-xs" />
+        {formError && (
+          <div className="md:col-span-5 bg-red-50 border border-red-200 text-red-700 rounded-2xl px-4 py-3 text-xs font-semibold">
+            {formError}
+          </div>
+        )}
       </form>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">

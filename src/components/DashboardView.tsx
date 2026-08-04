@@ -62,14 +62,24 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   // Adjust active filter based on logged-in doctor
   const activeFilterId = currentUser.role === "Doutora" ? defaultProfId : selectedProfId;
 
+  const activeProfessionalOptions = useMemo(() => professionals.filter(prof => prof.active), [professionals]);
+
+  const appointmentDateTime = (appointment: Appointment) => {
+    if (appointment.startAt) return new Date(appointment.startAt);
+    return new Date(`${appointment.date}T${appointment.time || "00:00"}:00`);
+  };
+
+  const isActiveFilterMatch = (appointment: Appointment) => {
+    return activeFilterId === "todas" || appointment.professionalId === activeFilterId;
+  };
+
   // Filter today's appointments
   const todayApps = useMemo(() => {
     return appointments.filter(app => {
       if (app.date !== todayStr) return false;
-      if (activeFilterId !== "todas" && app.professionalId !== activeFilterId) return false;
-      return true;
+      return isActiveFilterMatch(app);
     });
-  }, [appointments, activeFilterId]);
+  }, [appointments, activeFilterId, todayStr]);
 
   const activeTodayApps = useMemo(() => {
     return todayApps.filter(app => app.status !== "Cancelado");
@@ -82,30 +92,31 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
   // Next appointment
   const nextApp = useMemo(() => {
-    // Find the next appointment which is either Confirmed or Scheduled and sorted by time
-    const sortedActive = [...activeTodayApps].sort((a, b) => a.time.localeCompare(b.time));
-    return sortedActive.find(app => app.status === "Confirmado" || app.status === "Agendado");
-  }, [activeTodayApps]);
+    const now = new Date();
+    return appointments
+      .filter(app => isActiveFilterMatch(app))
+      .filter(app => app.status === "Confirmado" || app.status === "Agendado")
+      .filter(app => appointmentDateTime(app).getTime() >= now.getTime())
+      .sort((a, b) => appointmentDateTime(a).getTime() - appointmentDateTime(b).getTime())[0];
+  }, [appointments, activeFilterId]);
 
-  const activeProfessionals = activeFilterId === "todas"
-    ? professionals.filter(prof => prof.active)
-    : professionals.filter(prof => prof.id === activeFilterId && prof.active);
-  const totalPossibleSlots = activeProfessionals.reduce((sum, prof) => {
-    const [startH, startM] = prof.workingHoursStart.split(":").map(Number);
-    const [endH, endM] = prof.workingHoursEnd.split(":").map(Number);
-    const availableMinutes = Math.max(0, (endH * 60 + endM) - (startH * 60 + startM));
-    return sum + Math.floor(availableMinutes / (prof.defaultDuration || settings.defaultDuration || 30));
-  }, 0);
-  const freeSlots = Math.max(0, totalPossibleSlots - activeTodayApps.filter(a => ["Agendado", "Confirmado", "Atendido"].includes(a.status)).length);
+  const syncedTodayCount = activeTodayApps.filter(app => app.source === "cal.com" || app.calBookingUid).length;
 
   // Absence alerts from the past week
   const absenceAlerts = useMemo(() => {
-    return appointments.filter(app => app.status === "Faltou" && app.date <= todayStr).slice(0, 3);
-  }, [appointments]);
+    return appointments
+      .filter(app => isActiveFilterMatch(app))
+      .filter(app => app.status === "Faltou" && app.date <= todayStr)
+      .slice(0, 3);
+  }, [appointments, activeFilterId, todayStr]);
 
   // Summary per professional for the clinical overview panel
   const professionalSummaries = useMemo(() => {
-    return professionals.map(prof => {
+    const visibleProfessionals = activeFilterId === "todas"
+      ? activeProfessionalOptions
+      : activeProfessionalOptions.filter(prof => prof.id === activeFilterId);
+
+    return visibleProfessionals.map(prof => {
       const profTodayApps = appointments.filter(app => app.date === todayStr && app.professionalId === prof.id && app.status !== "Cancelado");
       const next = [...profTodayApps]
         .filter(app => app.status === "Confirmado" || app.status === "Agendado")
@@ -120,7 +131,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         pendingConf
       };
     });
-  }, [appointments, professionals]);
+  }, [activeFilterId, activeProfessionalOptions, appointments, todayStr]);
 
   const getGreeting = () => {
     const hours = new Date().getHours();
@@ -140,7 +151,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             {getGreeting()}, <span className="italic text-[#5A5A40] font-semibold">{currentUser.name}</span>
           </h2>
           <p className="text-xs text-[#707060]">
-            Seu consultório está operando com suporte a {professionals.length} dentistas e agenda oficial sincronizada.
+            Seu consultório está operando com {activeProfessionalOptions.length} dentistas ativas e agenda oficial via Cal.com.
           </p>
         </div>
         
@@ -179,7 +190,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               className="bg-[#F5F5F0] border border-[#E5E5E0] rounded-xl px-4 py-2 text-xs font-bold text-[#1A1A1A] outline-none"
             >
               <option value="todas">Todas as Dentistas</option>
-              {professionals.map(p => (
+              {activeProfessionalOptions.map(p => (
                 <option key={p.id} value={p.id}>{p.name}</option>
               ))}
             </select>
@@ -208,23 +219,23 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
           {nextApp ? (
             <div>
               <p className="text-sm font-bold mt-1 truncate text-[#1A1A1A]">{nextApp.patientName}</p>
-              <p className="text-xs text-[#C17A63] font-bold">{nextApp.time} • {nextApp.type}</p>
+              <p className="text-xs text-[#C17A63] font-bold">{nextApp.date.split("-").reverse().join("/")} as {nextApp.time} - {nextApp.type}</p>
             </div>
           ) : (
             <div>
               <p className="text-sm font-bold mt-1 text-[#707060]">Nenhum pendente</p>
-              <p className="text-xs text-[#A0A090]">Para o dia de hoje</p>
+              <p className="text-xs text-[#A0A090]">Nenhum horário futuro sincronizado</p>
             </div>
           )}
         </div>
 
         <div className="bg-white p-6 rounded-[32px] shadow-sm border border-[#E5E5E0] space-y-2 hover:shadow-md transition-all">
           <div className="flex items-center justify-between">
-            <p className="text-[10px] uppercase tracking-wider text-[#A0A090] font-bold">Vagas Livres</p>
+            <p className="text-[10px] uppercase tracking-wider text-[#A0A090] font-bold">Bookings Cal.com Hoje</p>
             <TrendingUp className="w-4 h-4 text-[#5A5A40]" />
           </div>
-          <p className="text-4xl font-serif mt-1 text-[#1A1A1A]">{freeSlots}</p>
-          <p className="text-xs text-[#707060]">Slots estimados disponíveis</p>
+          <p className="text-4xl font-serif mt-1 text-[#1A1A1A]">{syncedTodayCount}</p>
+          <p className="text-xs text-[#707060]">Registros recebidos do Cal.com</p>
         </div>
 
         <div className="bg-white p-6 rounded-[32px] shadow-sm border border-[#E5E5E0] space-y-2 hover:shadow-md transition-all">
