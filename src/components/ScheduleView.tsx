@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from "react";
-import { Appointment, Patient, AppointmentStatus, Professional, SystemUser } from "../types";
+import { Appointment, Patient, AppointmentStatus, Professional, SystemUser, ClinicSettings } from "../types";
+import { CalInlineEmbed } from "./CalInlineEmbed";
 import { 
   Calendar, 
   Clock, 
@@ -32,6 +33,8 @@ interface ScheduleViewProps {
   patients: Patient[];
   professionals: Professional[];
   currentUser: SystemUser;
+  settings: ClinicSettings;
+  dataMode: "production" | "demo";
   onAddAppointment: (app: Omit<Appointment, "id">) => void;
   onUpdateAppointmentStatus: (id: string, status: AppointmentStatus, notes?: string) => void;
   onUpdateAppointment?: (updated: Appointment) => void;
@@ -45,6 +48,8 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
   patients,
   professionals,
   currentUser,
+  settings,
+  dataMode,
   onAddAppointment,
   onUpdateAppointmentStatus,
   onUpdateAppointment,
@@ -55,8 +60,7 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
   // Calendar View Mode: "mes" | "semana" | "dia"
   const [viewMode, setViewMode] = useState<"mes" | "semana" | "dia">("semana");
 
-  // Selected date state (anchored initially on July 1, 2026, to match system's local clock and mock data)
-  const [currentDate, setCurrentDate] = useState<Date>(new Date(2026, 6, 1));
+  const [currentDate, setCurrentDate] = useState<Date>(new Date());
 
   // Right sidebar details panel state
   const [selectedApp, setSelectedApp] = useState<Appointment | null>(null);
@@ -251,7 +255,7 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
   const [formProfessionalId, setFormProfessionalId] = useState("");
   const [formPatientId, setFormPatientId] = useState("");
   const [formPhone, setFormPhone] = useState("");
-  const [formDate, setFormDate] = useState("2026-07-01");
+  const [formDate, setFormDate] = useState(() => new Date().toISOString().slice(0, 10));
   const [formTime, setFormTime] = useState("09:00");
   const [formType, setFormType] = useState("Primeira Consulta");
   const [formNotes, setFormNotes] = useState("");
@@ -492,6 +496,43 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
     });
   }, [appointments, selectedProfFilter]);
 
+  const selectedEmbedProfessional = React.useMemo(() => {
+    if (selectedProfFilter !== "todas") {
+      return professionals.find(p => p.id === selectedProfFilter);
+    }
+    return professionals.find(p => p.active);
+  }, [professionals, selectedProfFilter]);
+
+  const [visitedEmbedProfessionalIds, setVisitedEmbedProfessionalIds] = useState<string[]>([]);
+  const activeProfessionals = React.useMemo(() => professionals.filter(p => p.active), [professionals]);
+
+  useEffect(() => {
+    if (!selectedEmbedProfessional?.id) return;
+    setVisitedEmbedProfessionalIds((current) =>
+      current.includes(selectedEmbedProfessional.id) ? current : [...current, selectedEmbedProfessional.id]
+    );
+  }, [selectedEmbedProfessional?.id]);
+
+  const mountedEmbedProfessionals = React.useMemo(() => {
+    return activeProfessionals.filter((professional) =>
+      professional.id === selectedEmbedProfessional?.id || visitedEmbedProfessionalIds.includes(professional.id)
+    );
+  }, [activeProfessionals, selectedEmbedProfessional?.id, visitedEmbedProfessionalIds]);
+
+  const openCalBooking = (professionalId?: string) => {
+    const targetProfessionalId =
+      professionalId ||
+      (selectedProfFilter !== "todas" ? selectedProfFilter : selectedEmbedProfessional?.id);
+
+    if (targetProfessionalId) {
+      setSelectedProfFilter(targetProfessionalId);
+    }
+
+    window.setTimeout(() => {
+      document.getElementById("cal-official-booking")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 80);
+  };
+
   // Date Formatting Helpers
   const formatISO = (date: Date): string => {
     const y = date.getFullYear();
@@ -552,7 +593,7 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
   };
 
   const handleToday = () => {
-    setCurrentDate(new Date(2026, 6, 1)); // Set back to baseline today (July 1, 2026)
+    setCurrentDate(new Date());
   };
 
   // Filter Appointments with search term
@@ -670,45 +711,14 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
     onUpdateAppointmentStatus(id, "Atendido");
   };
 
-  // Open Return appointment wizard
+  // Return appointments are created in Cal.com; local calendar only reflects synced bookings.
   const handleScheduleReturn = (app: Appointment) => {
-    setFormPatientId(app.patientId);
-    setFormPhone(app.patientPhone);
-    // Suggest 2 weeks later
-    const baseDate = new Date(app.date);
-    baseDate.setDate(baseDate.getDate() + 14);
-    setFormDate(formatISO(baseDate));
-    setFormTime("10:00");
-    setFormDuration(30);
-    setFormEndTime("10:30");
-    setFormType("Retorno");
-    setFormNotes(`Agendamento de retorno pós-atendimento de ${app.patientName}.`);
-    setFormStatus("Agendado");
-    setShowNewAppModal(true);
+    openCalBooking(app.professionalId);
   };
 
-  // Remarcar wizard: presets form with previous settings, prompts canceling first, then schedules new
+  // Rescheduling starts from the official Cal.com flow.
   const handleRemarcarWizard = (app: Appointment) => {
-    setFormPatientId(app.patientId);
-    setFormPhone(app.patientPhone);
-    setFormDate(app.date);
-    setFormTime(app.time);
-    setFormDuration(app.duration || 30);
-    setFormEndTime(app.endTime || calculateEndTime(app.time, app.duration || 30));
-    setFormType(app.type);
-    setFormNotes(`Remarcação automática de consulta do dia ${app.date} às ${app.time}.`);
-    setFormStatus("Agendado");
-    
-    setConfirmModal({
-      isOpen: true,
-      type: "cancel",
-      appointmentId: app.id,
-      patientName: app.patientName
-    });
-    // Set note that old gets cancelled & we trigger new modal
-    setTimeout(() => {
-      setShowNewAppModal(true);
-    }, 100);
+    openCalBooking(app.professionalId);
   };
 
   // Submit New Appointment form
@@ -822,7 +832,7 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
             const dayAppointments = filterBySearch(filteredAppointments.filter(app => app.date === dateStr && app.status !== "Cancelado"));
             const totalCount = dayAppointments.length;
             const displayedApps = dayAppointments.slice(0, 3);
-            const isToday = dateStr === "2026-07-01";
+            const isToday = dateStr === formatISO(new Date());
 
             const isTargeted = dragOverSlot && dragOverSlot.date === dateStr;
 
@@ -904,10 +914,10 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
                       setFormTime("09:00");
                       setFormDuration(30);
                       setFormEndTime("09:30");
-                      setShowNewAppModal(true);
+                      openCalBooking();
                     }}
                     className="p-1 hover:bg-[#E5E5D8] rounded-full text-[#A0A090] hover:text-[#5A5A40] opacity-0 hover:opacity-100 sm:opacity-10 transition-all"
-                    title="Novo Agendamento"
+                    title="Abrir Cal.com"
                   >
                     <Plus className="w-3.5 h-3.5" />
                   </button>
@@ -978,7 +988,7 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
           </div>
           {weekDays.map((day, idx) => {
             const dateStr = formatISO(day);
-            const isToday = dateStr === "2026-07-01";
+            const isToday = dateStr === formatISO(new Date());
             
             return (
               <div 
@@ -1062,7 +1072,7 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
                                 setFormTime(slotTime);
                                 setFormDuration(30);
                                 setFormEndTime(calculateEndTime(slotTime, 30));
-                                setShowNewAppModal(true);
+                                openCalBooking();
                               }}
                               className="absolute inset-0.5 rounded-lg border border-dashed border-transparent group-hover:border-[#E5E5E0] group-hover:bg-[#FBFBFA]/90 flex items-center justify-center text-[9px] text-[#A0A090] font-bold opacity-0 group-hover:opacity-100 transition-all cursor-pointer z-0"
                             >
@@ -1156,7 +1166,7 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
   // ==========================================
   const renderDayView = () => {
     const formattedSelectedDate = formatISO(currentDate);
-    const isToday = formattedSelectedDate === "2026-07-01";
+    const isToday = formattedSelectedDate === formatISO(new Date());
 
     // 1. Get appointments for this specific day
     const dayAppointments = filteredAppointments.filter(app => app.date === formattedSelectedDate && app.status !== "Cancelado");
@@ -1227,7 +1237,7 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
                           setFormTime(slotTime);
                           setFormDuration(30);
                           setFormEndTime(calculateEndTime(slotTime, 30));
-                          setShowNewAppModal(true);
+                          openCalBooking();
                         }}
                         className="absolute inset-x-2 inset-y-1 rounded-xl border border-dashed border-transparent group-hover:border-[#E5E5E0] group-hover:bg-[#FBFBFA] flex items-center justify-center text-xs text-[#A0A090] font-bold opacity-0 group-hover:opacity-100 transition-all cursor-pointer z-0"
                       >
@@ -1711,19 +1721,61 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
           {/* Create Shortcut */}
           <button
             onClick={() => {
-              setFormDate(formatISO(currentDate));
-              setFormTime("09:00");
-              setShowNewAppModal(true);
+              document.getElementById("cal-official-booking")?.scrollIntoView({ behavior: "smooth", block: "start" });
             }}
             className="flex items-center justify-center gap-2 px-4 py-2.5 bg-[#5A5A40] text-white rounded-xl text-xs font-bold hover:bg-[#474732] shadow-sm transition-all whitespace-nowrap"
           >
             <Plus className="w-4 h-4" />
-            <span>Novo agendamento</span>
+            <span>Ir para Cal.com</span>
           </button>
 
         </div>
 
       </div>
+
+      <section id="cal-official-booking" className="space-y-4">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div>
+            <span className="text-[10px] font-extrabold text-[#C17A63] uppercase tracking-widest block mb-1">
+              Agenda oficial
+            </span>
+            <h2 className="font-serif text-2xl italic text-[#5A5A40] font-semibold">Cal.com por dentista</h2>
+            <p className="text-xs text-[#707060] mt-1">
+              As marcações são feitas no Cal.com; o calendário abaixo é a visão operacional sincronizada do painel.
+            </p>
+          </div>
+          <div className="bg-[#F5F5F0] border border-[#E5E5E0] rounded-2xl p-1 flex flex-wrap gap-1">
+            {activeProfessionals.map(professional => {
+              const active = selectedEmbedProfessional?.id === professional.id;
+              return (
+                <button
+                  key={professional.id}
+                  onClick={() => setSelectedProfFilter(professional.id)}
+                  className={`px-4 py-2 rounded-xl text-xs font-bold transition-all ${
+                    active ? "bg-[#5A5A40] text-white shadow-sm" : "text-[#5A5A40] hover:bg-white"
+                  }`}
+                >
+                  {professional.name}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+        <div>
+          {mountedEmbedProfessionals.length > 0 ? (
+            mountedEmbedProfessionals.map((professional) => (
+              <div
+                key={professional.id}
+                className={selectedEmbedProfessional?.id === professional.id ? "block" : "hidden"}
+              >
+                <CalInlineEmbed professional={professional} />
+              </div>
+            ))
+          ) : (
+            <CalInlineEmbed professional={selectedEmbedProfessional} />
+          )}
+        </div>
+      </section>
 
       {/* CORE WORKSPACE GRID CONTAINER (CALENDAR + SIDEBAR IF OPEN) */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
@@ -1743,6 +1795,7 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
         )}
 
       </div>
+
 
       {/* PREMIUM CUSTOM VISUAL CONFIRMATION DIALOG MODAL (Requirement) */}
       {confirmModal && confirmModal.isOpen && (

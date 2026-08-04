@@ -1,4 +1,5 @@
-import { Patient, Appointment, SystemUser, ClinicSettings, Professional } from "../types";
+import { Patient, Appointment, SystemUser, ClinicSettings, Professional, Contact, TimeOffEntry } from "../types";
+import { normalizePhone } from "../utils/phone";
 
 export const INITIAL_PATIENTS: Patient[] = [
   {
@@ -131,8 +132,41 @@ export const INITIAL_SETTINGS: ClinicSettings = {
   clinicName: "Francisca e Márcia Consultório Odontológico LTDA",
   clinicPhone: "+55 83 9364-7272",
   clinicEmail: "marciaodonto@yahoo.com.br",
-  clinicAddress: "Alameda das Flores, 450 - Sala 12 - Jardim Paulistano, São Paulo - SP"
+  clinicAddress: "Alameda das Flores, 450 - Sala 12 - Jardim Paulistano, São Paulo - SP",
+  timezone: "America/Sao_Paulo",
+  calAccountType: "team"
 };
+
+export const INITIAL_CONTACTS: Contact[] = [
+  {
+    id: "ctc-1",
+    name: "Maria das Dores Silva",
+    phone: "(11) 98765-4321",
+    normalizedPhone: normalizePhone("(11) 98765-4321"),
+    email: "maria.silva@email.com",
+    whatsappOptIn: true,
+    patientId: "pat-1",
+    tags: ["paciente", "whatsapp"],
+    notes: "Contato vinculado automaticamente pela ficha do paciente.",
+    source: "manual",
+    createdAt: "2026-07-01T08:00:00.000Z",
+    updatedAt: "2026-07-01T08:00:00.000Z"
+  },
+  {
+    id: "ctc-2",
+    name: "Lead WhatsApp",
+    phone: "8398842527",
+    normalizedPhone: normalizePhone("8398842527"),
+    whatsappOptIn: true,
+    tags: ["lead"],
+    notes: "Contato ainda sem ficha clinica.",
+    source: "whatsapp",
+    createdAt: "2026-07-01T09:00:00.000Z",
+    updatedAt: "2026-07-01T09:00:00.000Z"
+  }
+];
+
+export const INITIAL_TIME_OFF: TimeOffEntry[] = [];
 
 export const INITIAL_APPOINTMENTS: Appointment[] = [
   {

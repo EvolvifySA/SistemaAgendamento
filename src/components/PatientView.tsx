@@ -1,5 +1,6 @@
 import React, { useState } from "react";
-import { Patient, Appointment, PatientAddress } from "../types";
+import { Patient, Appointment, PatientAddress, Contact } from "../types";
+import { normalizePhone } from "../utils/phone";
 import { lookupCep } from "../services/cep";
 import {
   Users,
@@ -42,6 +43,7 @@ const formatDateAndCompleteTime = (dateStr: string, timeStr: string, endTimeStr?
 interface PatientViewProps {
   patients: Patient[];
   appointments: Appointment[];
+  contacts: Contact[];
   onAddPatient: (patient: Omit<Patient, "id" | "absencesCount" | "history">) => void;
   onEditPatient: (patient: Patient) => void;
   onOpenNewAppointmentForPatient: (patientId: string) => void;
@@ -52,6 +54,7 @@ interface PatientViewProps {
 export const PatientView: React.FC<PatientViewProps> = ({
   patients,
   appointments,
+  contacts,
   onAddPatient,
   onEditPatient,
   onOpenNewAppointmentForPatient,
@@ -229,6 +232,9 @@ export const PatientView: React.FC<PatientViewProps> = ({
 
   // Get full historical appointments for the selected patient
   const patientAppointments = appointments.filter(a => a.patientId === selectedPatient?.id);
+  const selectedPatientContact = selectedPatient
+    ? contacts.find(contact => contact.patientId === selectedPatient.id || contact.normalizedPhone === (selectedPatient.normalizedPhone || normalizePhone(selectedPatient.phone)))
+    : null;
 
   return (
     <div className="space-y-8 animate-fade-in">
@@ -338,6 +344,11 @@ export const PatientView: React.FC<PatientViewProps> = ({
                   <p className="font-semibold text-sm mt-0.5 flex items-center gap-1 text-[#5A5A40]">
                     <Phone className="w-3.5 h-3.5 text-[#C17A63]" /> {selectedPatient.phone}
                   </p>
+                  {selectedPatientContact && (
+                    <span className="inline-flex mt-1 bg-green-50 text-green-800 border border-green-200 px-2 py-0.5 rounded-full text-[9px] font-bold uppercase">
+                      Contato vinculado
+                    </span>
+                  )}
                 </div>
                 <div>
                   <p className="text-[10px] uppercase text-[#A0A090] font-bold">Data de Nascimento</p>

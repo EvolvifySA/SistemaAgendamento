@@ -1,5 +1,5 @@
 import React, { useState, useMemo } from "react";
-import { Appointment, Patient, Professional, SystemUser } from "../types";
+import { Appointment, Patient, Professional, SystemUser, ClinicSettings } from "../types";
 import { 
   Calendar, 
   Users, 
@@ -22,6 +22,7 @@ interface DashboardViewProps {
   appointments: Appointment[];
   patients: Patient[];
   professionals: Professional[];
+  settings: ClinicSettings;
   onNavigate: (viewId: string) => void;
   onOpenNewAppointment: () => void;
   onOpenNewPatient: () => void;
@@ -33,13 +34,18 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   appointments,
   patients,
   professionals,
+  settings,
   onNavigate,
   onOpenNewAppointment,
   onOpenNewPatient,
   onSelectAppointment
 }) => {
-  // Today's Date Reference
-  const todayStr = "2026-07-01";
+  const todayStr = new Intl.DateTimeFormat("en-CA", {
+    timeZone: settings.timezone || "America/Sao_Paulo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).format(new Date());
 
   // State for active professional filter on dashboard
   const [selectedProfId, setSelectedProfId] = useState<string>("todas");
@@ -81,8 +87,15 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
     return sortedActive.find(app => app.status === "Confirmado" || app.status === "Agendado");
   }, [activeTodayApps]);
 
-  // Calculate free slots
-  const totalPossibleSlots = 10;
+  const activeProfessionals = activeFilterId === "todas"
+    ? professionals.filter(prof => prof.active)
+    : professionals.filter(prof => prof.id === activeFilterId && prof.active);
+  const totalPossibleSlots = activeProfessionals.reduce((sum, prof) => {
+    const [startH, startM] = prof.workingHoursStart.split(":").map(Number);
+    const [endH, endM] = prof.workingHoursEnd.split(":").map(Number);
+    const availableMinutes = Math.max(0, (endH * 60 + endM) - (startH * 60 + startM));
+    return sum + Math.floor(availableMinutes / (prof.defaultDuration || settings.defaultDuration || 30));
+  }, 0);
   const freeSlots = Math.max(0, totalPossibleSlots - activeTodayApps.filter(a => ["Agendado", "Confirmado", "Atendido"].includes(a.status)).length);
 
   // Absence alerts from the past week
@@ -127,7 +140,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             {getGreeting()}, <span className="italic text-[#5A5A40] font-semibold">{currentUser.name}</span>
           </h2>
           <p className="text-xs text-[#707060]">
-            Seu consultório está operando com suporte a {professionals.length} dentistas. Dados mockados em tempo real.
+            Seu consultório está operando com suporte a {professionals.length} dentistas e agenda oficial sincronizada.
           </p>
         </div>
         

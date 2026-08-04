@@ -24,6 +24,15 @@ export interface Professional {
   workingDays: number[]; // [1, 2, 3, 4, 5] (1 = Monday, 5 = Friday, etc.)
   defaultDuration: number; // minutes
   notes?: string;
+  calUserId?: number;
+  calUsername?: string;
+  calEventTypeId?: number;
+  calTeamId?: number;
+  calOrgId?: number;
+  calAccountType?: "individual" | "team" | "organization";
+  calApiKeyEnvVar?: string;
+  timezone?: string;
+  calConnected?: boolean;
 }
 
 export interface Appointment {
@@ -39,6 +48,12 @@ export interface Appointment {
   type: string; // "Primeira Consulta" | "Retorno" | "Exame" | "Acompanhamento"
   status: AppointmentStatus;
   notes: string;
+  calBookingUid?: string;
+  calStatus?: string;
+  source?: "cal.com" | "internal" | "demo";
+  startAt?: string;
+  endAt?: string;
+  timezone?: string;
 }
 
 export interface PatientAddress {
@@ -55,6 +70,7 @@ export interface Patient {
   id: string;
   name: string;
   phone: string;
+  normalizedPhone?: string;
   birthdate?: string; // YYYY-MM-DD
   cpf?: string;
   email?: string;
@@ -71,6 +87,32 @@ export interface Patient {
   }[];
 }
 
+export interface Contact {
+  id: string;
+  name: string;
+  phone: string;
+  normalizedPhone: string;
+  email?: string;
+  whatsappOptIn: boolean;
+  patientId?: string;
+  tags: string[];
+  notes: string;
+  source: "manual" | "cal.com" | "whatsapp" | "import";
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface TimeOffEntry {
+  id: string;
+  professionalId: string;
+  calOooId?: number;
+  start: string;
+  end: string;
+  reason: "unspecified" | "vacation" | "travel" | "sick" | "public_holiday";
+  notes: string;
+  source: "cal.com" | "internal" | "demo";
+}
+
 export interface ClinicSettings {
   workingHoursStart: string;
   workingHoursEnd: string;
@@ -82,4 +124,20 @@ export interface ClinicSettings {
   clinicPhone: string;
   clinicEmail: string;
   clinicAddress: string;
+  timezone: string;
+  calAccountType: "individual" | "team" | "organization";
+  calTeamId?: number;
+  calOrgId?: number;
+  n8nWebhookUrl?: string;
+}
+
+export interface AppBootstrapData {
+  patients: Patient[];
+  appointments: Appointment[];
+  users: SystemUser[];
+  professionals: Professional[];
+  contacts: Contact[];
+  timeOff: TimeOffEntry[];
+  settings: ClinicSettings;
+  mode: "production" | "demo";
 }

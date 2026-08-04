@@ -1,5 +1,5 @@
 import React, { useState, useMemo } from "react";
-import { Appointment, Patient, Professional, SystemUser } from "../types";
+import { Appointment, Patient, Professional, SystemUser, ClinicSettings } from "../types";
 import { 
   TrendingUp, 
   Users, 
@@ -23,13 +23,15 @@ interface MetricsViewProps {
   appointments: Appointment[];
   patients: Patient[];
   professionals: Professional[];
+  settings: ClinicSettings;
 }
 
 export function MetricsView({ 
   currentUser, 
   appointments, 
   patients, 
-  professionals 
+  professionals,
+  settings
 }: MetricsViewProps) {
   
   // States for filters
@@ -39,24 +41,29 @@ export function MetricsView({
   const [typeFilter, setTypeFilter] = useState<string>("todos");
 
   // Custom range dates (used if personalizados)
-  const [customStartDate, setCustomStartDate] = useState("2026-07-01");
-  const [customEndDate, setCustomEndDate] = useState("2026-07-07");
+  const today = new Date();
+  const todayIso = today.toISOString().slice(0, 10);
+  const [customStartDate, setCustomStartDate] = useState(todayIso);
+  const [customEndDate, setCustomEndDate] = useState(todayIso);
 
-  // Reference baseline date in July 1st, 2026
-  const BASELINE_DATE = "2026-07-01";
+  const startOfWeek = new Date(today);
+  startOfWeek.setDate(today.getDate() - today.getDay() + 1);
+  const endOfWeek = new Date(startOfWeek);
+  endOfWeek.setDate(startOfWeek.getDate() + 6);
+  const startOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
+  const endOfMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0);
+  const iso = (date: Date) => date.toISOString().slice(0, 10);
 
   // Helper to determine if date is in range
   const isDateInPeriod = (dateStr: string): boolean => {
     if (periodFilter === "hoje") {
-      return dateStr === BASELINE_DATE;
+      return dateStr === todayIso;
     }
     if (periodFilter === "semana") {
-      // July 1, 2026 is Wednesday. Let's make week encompass 2026-06-28 to 2026-07-04
-      return dateStr >= "2026-06-28" && dateStr <= "2026-07-04";
+      return dateStr >= iso(startOfWeek) && dateStr <= iso(endOfWeek);
     }
     if (periodFilter === "mes") {
-      // Month of July 2026
-      return dateStr >= "2026-07-01" && dateStr <= "2026-07-31";
+      return dateStr >= iso(startOfMonth) && dateStr <= iso(endOfMonth);
     }
     if (periodFilter === "personalizado") {
       return dateStr >= customStartDate && dateStr <= customEndDate;
@@ -107,20 +114,18 @@ export function MetricsView({
       ? Math.round(((atendidos + confirmados) / activeExpectedSpots) * 100) 
       : 100;
 
-    // Occupancy (working hours occupied vs total available hours)
-    // Let's assume each professional works 8 hours a day = 480 mins.
-    // If "Todas", sum all active professionals.
     const activeProfsCount = profFilter === "todas" 
       ? professionals.filter(p => p.active).length 
       : 1;
 
-    // Calculate days in range
-    let daysCount = 1;
-    if (periodFilter === "semana") daysCount = 5; // Monday-Friday
-    else if (periodFilter === "mes") daysCount = 22; // working days in July
-    else if (periodFilter === "personalizado") daysCount = 5;
-
-    const totalMinutesAvailable = activeProfsCount * daysCount * 8 * 60; // 8 hours * 60 mins
+    const daysCount = periodFilter === "hoje" ? 1 : periodFilter === "semana" ? 7 : periodFilter === "mes" ? endOfMonth.getDate() : Math.max(1, Math.ceil((new Date(customEndDate).getTime() - new Date(customStartDate).getTime()) / 86400000) + 1);
+    const selectedProfs = profFilter === "todas" ? professionals.filter(p => p.active) : professionals.filter(p => p.id === profFilter);
+    const dailyAvailableMinutes = selectedProfs.reduce((sum, prof) => {
+      const [startH, startM] = prof.workingHoursStart.split(":").map(Number);
+      const [endH, endM] = prof.workingHoursEnd.split(":").map(Number);
+      return sum + Math.max(0, (endH * 60 + endM) - (startH * 60 + startM));
+    }, 0);
+    const totalMinutesAvailable = Math.max(0, dailyAvailableMinutes * daysCount);
     const occupiedMinutes = filteredAppointments
       .filter(a => a.status !== "Cancelado")
       .reduce((sum, a) => sum + (a.duration || 30), 0);
@@ -130,7 +135,7 @@ export function MetricsView({
       : 0);
 
     // Free slots estimate
-    const slotDuration = 30;
+    const slotDuration = settings.defaultDuration || 30;
     const totalSlots = Math.round(totalMinutesAvailable / slotDuration);
     const occupiedSlotsCount = filteredAppointments.filter(a => a.status !== "Cancelado").length;
     const freeSlots = Math.max(0, totalSlots - occupiedSlotsCount);
@@ -174,12 +179,10 @@ export function MetricsView({
 
       const avgDuration = atendidos > 0 ? Math.round(totalMinutes / atendidos) : 0;
 
-      // Occupancy rate calculation
-      let daysCount = 1;
-      if (periodFilter === "semana") daysCount = 5;
-      else if (periodFilter === "mes") daysCount = 22;
-
-      const availableMins = daysCount * 8 * 60; // 8 hours
+      const daysCount = periodFilter === "hoje" ? 1 : periodFilter === "semana" ? 7 : periodFilter === "mes" ? endOfMonth.getDate() : Math.max(1, Math.ceil((new Date(customEndDate).getTime() - new Date(customStartDate).getTime()) / 86400000) + 1);
+      const [startH, startM] = prof.workingHoursStart.split(":").map(Number);
+      const [endH, endM] = prof.workingHoursEnd.split(":").map(Number);
+      const availableMins = Math.max(0, ((endH * 60 + endM) - (startH * 60 + startM)) * daysCount);
       const occupiedMins = profApps
         .filter(a => a.status !== "Cancelado")
         .reduce((sum, a) => sum + (a.duration || 30), 0);
@@ -202,14 +205,15 @@ export function MetricsView({
     });
   }, [appointments, professionals, periodFilter]);
 
-  // Chart data 1: Appointments by Day of week (July 1st, 2026 week)
+  // Chart data 1: Appointments by day of the current week
   const appointmentsByDay = useMemo(() => {
+    const labels = ["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sáb"];
     const weekdays = [
-      { name: "Seg", date: "2026-06-29", count: 0 },
-      { name: "Ter", date: "2026-06-30", count: 0 },
-      { name: "Qua", date: "2026-07-01", count: 0 },
-      { name: "Qui", date: "2026-07-02", count: 0 },
-      { name: "Sex", date: "2026-07-03", count: 0 }
+      ...Array.from({ length: 7 }, (_, index) => {
+        const day = new Date(startOfWeek);
+        day.setDate(startOfWeek.getDate() + index);
+        return { name: labels[day.getDay()], date: iso(day), count: 0 };
+      })
     ];
 
     appointments.forEach(app => {
@@ -300,9 +304,9 @@ export function MetricsView({
               onChange={(e) => setPeriodFilter(e.target.value as any)}
               className="w-full bg-[#F5F5F0] border border-[#E5E5E0] rounded-2xl px-4 py-2.5 text-xs font-semibold text-[#1A1A1A] outline-none"
             >
-              <option value="hoje">Hoje (01/Jul/2026)</option>
-              <option value="semana">Esta Semana (28/Jun - 04/Jul)</option>
-              <option value="mes">Este Mês (Julho/2026)</option>
+              <option value="hoje">Hoje ({todayIso.split("-").reverse().join("/")})</option>
+              <option value="semana">Esta Semana</option>
+              <option value="mes">Este Mês</option>
               <option value="personalizado">Período Personalizado</option>
             </select>
           </div>

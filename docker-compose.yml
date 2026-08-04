@@ -1,0 +1,39 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: sistema_agendamento_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-clinic}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-clinic_dev_password}
+      POSTGRES_DB: ${POSTGRES_DB:-clinic_agenda}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-clinic} -d ${POSTGRES_DB:-clinic_agenda}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  app:
+    build: .
+    container_name: sistema_agendamento_app
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PORT: 3001
+      DATABASE_URL: postgres://${POSTGRES_USER:-clinic}:${POSTGRES_PASSWORD:-clinic_dev_password}@postgres:5432/${POSTGRES_DB:-clinic_agenda}
+      CAL_API_KEY: ${CAL_API_KEY:-}
+      CAL_API_KEY_MARCIA: ${CAL_API_KEY_MARCIA:-}
+      CAL_API_KEY_FRANCISCA: ${CAL_API_KEY_FRANCISCA:-}
+      CAL_API_VERSION: ${CAL_API_VERSION:-2026-05-01}
+      N8N_WEBHOOK_URL: ${N8N_WEBHOOK_URL:-}
+    ports:
+      - "${APP_PORT:-3001}:3001"
+
+volumes:
+  postgres_data:

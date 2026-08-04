@@ -5,23 +5,18 @@ import {
   Appointment, 
   ClinicSettings, 
   AppointmentStatus,
-  Professional
+  Professional,
+  Contact,
+  TimeOffEntry
 } from "./types";
 import {
-  INITIAL_PATIENTS,
   INITIAL_USERS,
   INITIAL_SETTINGS,
-  INITIAL_APPOINTMENTS,
-  INITIAL_PROFESSIONALS
+  INITIAL_CONTACTS,
+  INITIAL_TIME_OFF
 } from "./data/mockData";
-import {
-  patientStorage,
-  appointmentStorage,
-  userStorage,
-  professionalStorage,
-  settingsStorage,
-  sessionStorage_
-} from "./services/storage";
+import { apiClient } from "./services/apiClient";
+import { normalizePhone } from "./utils/phone";
 
 // Views imports
 import { LoginScreen } from "./components/LoginScreen";
@@ -33,6 +28,8 @@ import { SettingsView } from "./components/SettingsView";
 import { ProfileView } from "./components/ProfileView";
 import { ProfessionalsView } from "./components/ProfessionalsView";
 import { MetricsView } from "./components/MetricsView";
+import { ContactsView } from "./components/ContactsView";
+import { TimeOffView } from "./components/TimeOffView";
 
 // Icons
 import { 
@@ -50,8 +47,22 @@ import {
   Bell,
   Briefcase,
   TrendingUp,
-  Heart
+  Heart,
+  ContactRound,
+  CalendarOff
 } from "lucide-react";
+
+const linkContactsToPatients = (contacts: Contact[], patients: Patient[]): Contact[] => {
+  return contacts.map(contact => {
+    const normalizedPhone = contact.normalizedPhone || normalizePhone(contact.phone);
+    const matchedPatient = patients.find(patient => (patient.normalizedPhone || normalizePhone(patient.phone)) === normalizedPhone);
+    return {
+      ...contact,
+      normalizedPhone,
+      patientId: contact.patientId || matchedPatient?.id
+    };
+  });
+};
 
 export default function App() {
   // Session states
@@ -63,7 +74,12 @@ export default function App() {
   const [appointments, setAppointments] = useState<Appointment[]>([]);
   const [users, setUsers] = useState<SystemUser[]>([]);
   const [professionals, setProfessionals] = useState<Professional[]>([]);
+  const [contacts, setContacts] = useState<Contact[]>([]);
+  const [timeOff, setTimeOff] = useState<TimeOffEntry[]>([]);
   const [settings, setSettings] = useState<ClinicSettings>(INITIAL_SETTINGS);
+  const [dataMode, setDataMode] = useState<"production" | "demo">("demo");
+  const [loadingData, setLoadingData] = useState(true);
+  const [loadError, setLoadError] = useState("");
 
   // Global search & UI states
   const [globalSearch, setGlobalSearch] = useState("");
@@ -72,18 +88,44 @@ export default function App() {
 
   // Load state from local storage or mock files on startup
   useEffect(() => {
-    setPatients(patientStorage.load() || INITIAL_PATIENTS);
-    setAppointments(appointmentStorage.load() || INITIAL_APPOINTMENTS);
-    setUsers(userStorage.load() || INITIAL_USERS);
-    setProfessionals(professionalStorage.load() || INITIAL_PROFESSIONALS);
-    setSettings(settingsStorage.load() || INITIAL_SETTINGS);
+    const load = async () => {
+      try {
+        const data = await apiClient.bootstrap();
+        const normalizedPatients = data.patients.map(p => ({
+          ...p,
+          normalizedPhone: p.normalizedPhone || normalizePhone(p.phone)
+        }));
+        setPatients(normalizedPatients);
+        setAppointments(data.appointments);
+        setUsers(data.users);
+        setProfessionals(data.professionals);
+        setContacts(linkContactsToPatients(data.contacts.length ? data.contacts : INITIAL_CONTACTS, normalizedPatients));
+        setTimeOff(data.timeOff.length ? data.timeOff : INITIAL_TIME_OFF);
+        setSettings(data.settings);
+        setDataMode(data.mode);
+
+        const savedSession = window.sessionStorage.getItem("clinic_session");
+        if (savedSession) {
+          setCurrentUser(JSON.parse(savedSession));
+        } else if (data.mode === "demo") {
+          const defaultAdmin = data.users.find(u => u.role === "Administrador") || data.users[0] || INITIAL_USERS[0];
+          setCurrentUser(defaultAdmin);
+        }
+      } catch (error) {
+        setLoadError(error instanceof Error ? error.message : "Falha ao carregar dados da API.");
+      } finally {
+        setLoadingData(false);
+      }
+    };
+
+    load();
 
     // Auto log in as Admin by default for first experience to make it fast to explore,
     // but allow logging out to test other accounts!
-    const savedSession = sessionStorage_.load();
-    if (savedSession) {
+    const savedSession = null;
+    if (false && savedSession) {
       setCurrentUser(savedSession);
-    } else {
+    } else if (false) {
       // Set default initial logged-in user as Roberta (Recepção) or Lucas (Admin)
       // Let's boot with Lucas (Admin) so they see all menus instantly
       const defaultAdmin = INITIAL_USERS.find(u => u.role === "Administrador") || INITIAL_USERS[0];
@@ -93,28 +135,40 @@ export default function App() {
 
   // Sync data stores helper
   const savePatients = (updatedList: Patient[]) => {
-    setPatients(updatedList);
-    patientStorage.save(updatedList);
+    const normalized = updatedList.map(p => ({ ...p, normalizedPhone: normalizePhone(p.phone) }));
+    setPatients(normalized);
+    setContacts(prev => linkContactsToPatients(prev, normalized));
+    void apiClient.savePatients(normalized);
   };
 
   const saveAppointments = (updatedList: Appointment[]) => {
     setAppointments(updatedList);
-    appointmentStorage.save(updatedList);
+    void apiClient.saveAppointments(updatedList);
   };
 
   const saveUsers = (updatedList: SystemUser[]) => {
     setUsers(updatedList);
-    userStorage.save(updatedList);
+    void apiClient.saveUsers(updatedList);
   };
 
   const saveProfessionals = (updatedList: Professional[]) => {
     setProfessionals(updatedList);
-    professionalStorage.save(updatedList);
+    void apiClient.saveProfessionals(updatedList);
   };
 
   const saveSettings = (updated: ClinicSettings) => {
     setSettings(updated);
-    settingsStorage.save(updated);
+    void apiClient.saveSettings(updated);
+  };
+
+  const saveContacts = (updatedList: Contact[]) => {
+    const linked = linkContactsToPatients(updatedList, patients);
+    setContacts(linked);
+    void apiClient.saveContacts(linked);
+  };
+
+  const saveTimeOff = (updatedList: TimeOffEntry[]) => {
+    setTimeOff(updatedList);
   };
 
   // Add entity handlers
@@ -122,6 +176,7 @@ export default function App() {
     const newPatient: Patient = {
       ...newPatData,
       id: `pat-${Date.now()}`,
+      normalizedPhone: normalizePhone(newPatData.phone),
       absencesCount: 0,
       history: []
     };
@@ -155,7 +210,7 @@ export default function App() {
   };
 
   const handleUpdatePatient = (updatedPatient: Patient) => {
-    const updated = patients.map(p => p.id === updatedPatient.id ? updatedPatient : p);
+    const updated = patients.map(p => p.id === updatedPatient.id ? { ...updatedPatient, normalizedPhone: normalizePhone(updatedPatient.phone) } : p);
     savePatients(updated);
   };
 
@@ -183,7 +238,7 @@ export default function App() {
     // If updating current user
     if (currentUser && currentUser.id === updatedUser.id) {
       setCurrentUser(updatedUser);
-      sessionStorage_.save(updatedUser);
+      window.sessionStorage.setItem("clinic_session", JSON.stringify(updatedUser));
     }
   };
 
@@ -207,6 +262,12 @@ export default function App() {
   };
 
   const handleUpdateAppointmentStatus = (id: string, status: AppointmentStatus, customNotes?: string) => {
+    const targetBeforeUpdate = appointments.find(a => a.id === id);
+    if (status === "Cancelado" && targetBeforeUpdate?.calBookingUid) {
+      void apiClient.cancelCalBooking(targetBeforeUpdate.calBookingUid, customNotes || "Cancelado pelo painel");
+    }
+    void apiClient.updateAppointmentStatus(id, status, customNotes);
+
     const updated = appointments.map(app => {
       if (app.id === id) {
         return { 
@@ -220,7 +281,7 @@ export default function App() {
     saveAppointments(updated);
 
     // Sync in patient stats if they missed (Faltou) or completed (Atendido)
-    const targetApp = appointments.find(a => a.id === id);
+    const targetApp = targetBeforeUpdate;
     if (targetApp) {
       const patientId = targetApp.patientId;
       const pat = patients.find(p => p.id === patientId);
@@ -262,13 +323,13 @@ export default function App() {
   // Login/logout logic
   const handleLogin = (user: SystemUser) => {
     setCurrentUser(user);
-    sessionStorage_.save(user);
+    window.sessionStorage.setItem("clinic_session", JSON.stringify(user));
     setActiveView("dashboard");
   };
 
   const handleLogout = () => {
     setCurrentUser(null);
-    sessionStorage_.clear();
+    window.sessionStorage.removeItem("clinic_session");
   };
 
   // Quick navigation helpers
@@ -277,27 +338,85 @@ export default function App() {
     setActiveView("agenda");
   };
 
+  const openCalBookingArea = () => {
+    setActiveView("agenda");
+    window.setTimeout(() => {
+      document.getElementById("cal-official-booking")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 120);
+  };
+
   // Helper for patient view linkage
   const [selectedPatientInView, setSelectedPatientInView] = useState<Patient | null>(null);
 
-  const handleOpenNewAppointmentForPatient = (patientId: string) => {
-    // Navigate to agenda and open modal or pass trigger
-    setActiveView("agenda");
-    // Handled natively inside ScheduleView via component props or we can alert
-    setTimeout(() => {
-      const btn = document.querySelector('[class*="Novo Agendamento"]') as HTMLButtonElement;
-      if (btn) btn.click();
-    }, 100);
+  const handleOpenNewAppointmentForPatient = () => {
+    openCalBookingArea();
   };
 
-  const handleOpenReturnForPatient = (patientId: string) => {
-    setActiveView("agenda");
-    setTimeout(() => {
-      // Pre-fill return parameters trigger
-      alert("✨ Agendamento de Retorno: Preenchendo o formulário de consulta com as credenciais do paciente para retorno.");
-      const btn = document.querySelector('[class*="Novo Agendamento"]') as HTMLButtonElement;
-      if (btn) btn.click();
-    }, 100);
+  const handleOpenReturnForPatient = () => {
+    openCalBookingArea();
+  };
+
+  const handleAddContact = (newContactData: Omit<Contact, "id" | "normalizedPhone" | "createdAt" | "updatedAt">) => {
+    const now = new Date().toISOString();
+    const newContact: Contact = {
+      ...newContactData,
+      id: `ctc-${Date.now()}`,
+      normalizedPhone: normalizePhone(newContactData.phone),
+      createdAt: now,
+      updatedAt: now
+    };
+    saveContacts([newContact, ...contacts]);
+  };
+
+  const handleUpdateContact = (updatedContact: Contact) => {
+    const updated = contacts.map(contact =>
+      contact.id === updatedContact.id
+        ? { ...updatedContact, normalizedPhone: normalizePhone(updatedContact.phone), updatedAt: new Date().toISOString() }
+        : contact
+    );
+    saveContacts(updated);
+  };
+
+  const handleCreatePatientFromContact = (contact: Contact) => {
+    const newPatient: Patient = {
+      id: `pat-${Date.now()}`,
+      name: contact.name,
+      phone: contact.phone,
+      normalizedPhone: normalizePhone(contact.phone),
+      email: contact.email,
+      importantNotes: "",
+      quickNotes: contact.notes || "Criado a partir da aba Contatos.",
+      absencesCount: 0,
+      history: []
+    };
+
+    const updatedPatients = [newPatient, ...patients];
+    savePatients(updatedPatients);
+    saveContacts(contacts.map(item => item.id === contact.id ? { ...item, patientId: newPatient.id } : item));
+    setActiveView("pacientes");
+  };
+
+  const handleSaveTimeOffEntry = async (entry: Omit<TimeOffEntry, "id" | "source"> | TimeOffEntry) => {
+    try {
+      if ("id" in entry) {
+        const updated = await apiClient.updateTimeOff(entry.professionalId, entry);
+        saveTimeOff(timeOff.map(item => item.id === updated.id ? updated : item));
+      } else {
+        const created = await apiClient.createTimeOff(entry.professionalId, entry);
+        saveTimeOff([created, ...timeOff]);
+      }
+    } catch (error) {
+      alert(error instanceof Error ? error.message : "Nao foi possivel salvar a folga.");
+    }
+  };
+
+  const handleDeleteTimeOffEntry = async (entry: TimeOffEntry) => {
+    try {
+      await apiClient.deleteTimeOff(entry.professionalId, entry.id);
+      saveTimeOff(timeOff.filter(item => item.id !== entry.id));
+    } catch (error) {
+      alert(error instanceof Error ? error.message : "Nao foi possivel remover a folga.");
+    }
   };
 
   // Global searching matching logic
@@ -318,6 +437,26 @@ export default function App() {
     setGlobalSearch("");
   };
 
+  if (loadingData) {
+    return (
+      <div className="min-h-screen bg-[#F5F5F0] flex items-center justify-center text-[#5A5A40] text-sm font-bold">
+        Carregando dados do consultorio...
+      </div>
+    );
+  }
+
+  if (loadError) {
+    return (
+      <div className="min-h-screen bg-[#F5F5F0] flex items-center justify-center p-6">
+        <div className="bg-white border border-red-200 rounded-3xl p-8 max-w-lg text-sm text-red-700 shadow-sm">
+          <p className="font-bold mb-2">Nao foi possivel carregar a API do consultorio.</p>
+          <p>{loadError}</p>
+          <p className="text-xs text-[#707060] mt-4">Inicie o backend com <code>npm run server</code> e mantenha o Vite em outra janela.</p>
+        </div>
+      </div>
+    );
+  }
+
   if (!currentUser) {
     return (
       <LoginScreen 
@@ -335,7 +474,9 @@ export default function App() {
     { id: "dashboard", label: "Dashboard", icon: LayoutDashboard },
     { id: "agenda", label: "Agenda Digital", icon: Calendar },
     { id: "pacientes", label: "Pacientes", icon: Users },
+    { id: "contatos", label: "Contatos", icon: ContactRound },
     { id: "profissionais", label: "Profissionais", icon: Briefcase },
+    { id: "folgas", label: "Folgas / Bloqueios", icon: CalendarOff },
     { id: "metricas", label: "Métricas da Clínica", icon: TrendingUp },
     ...(isAdm ? [
       { id: "usuarios", label: "Equipe / Usuários", icon: UserCheck },
@@ -461,7 +602,7 @@ export default function App() {
           {/* Footnotes representation */}
           <div className="p-3 bg-[#FBFBFA] rounded-2xl border border-[#F0F0E8] text-[10px] text-[#707060] leading-relaxed">
             <p className="font-bold text-[#5A5A40]">🔐 Sistema Clínico Homologado</p>
-            <p className="mt-0.5 opacity-80">Ambiente operacional blindado e em total conformidade com a LGPD de saúde.</p>
+            <p className="mt-0.5 opacity-80">Dados operacionais servidos pelo backend, com credenciais sensíveis fora do frontend.</p>
           </div>
         </aside>
 
@@ -474,14 +615,9 @@ export default function App() {
               appointments={appointments}
               patients={patients}
               professionals={professionals}
+              settings={settings}
               onNavigate={setActiveView}
-              onOpenNewAppointment={() => {
-                setActiveView("agenda");
-                setTimeout(() => {
-                  const btn = document.querySelector('[class*="Novo Agendamento"]') as HTMLButtonElement;
-                  if (btn) btn.click();
-                }, 100);
-              }}
+              onOpenNewAppointment={openCalBookingArea}
               onOpenNewPatient={() => {
                 setActiveView("pacientes");
                 setTimeout(() => {
@@ -499,6 +635,8 @@ export default function App() {
               patients={patients}
               professionals={professionals}
               currentUser={currentUser}
+              settings={settings}
+              dataMode={dataMode}
               onAddAppointment={handleAddAppointment}
               onUpdateAppointmentStatus={handleUpdateAppointmentStatus}
               onUpdateAppointment={handleUpdateAppointment}
@@ -518,11 +656,23 @@ export default function App() {
             <PatientView 
               patients={patients}
               appointments={appointments}
+              contacts={contacts}
               onAddPatient={handleAddPatient}
               onEditPatient={handleUpdatePatient}
               onOpenNewAppointmentForPatient={handleOpenNewAppointmentForPatient}
               onOpenReturnForPatient={handleOpenReturnForPatient}
               onDeletePatient={handleDeletePatient}
+            />
+          )}
+
+          {activeView === "contatos" && (
+            <ContactsView
+              contacts={contacts}
+              patients={patients}
+              onAddContact={handleAddContact}
+              onUpdateContact={handleUpdateContact}
+              onCreatePatientFromContact={handleCreatePatientFromContact}
+              onNavigate={setActiveView}
             />
           )}
 
@@ -535,12 +685,23 @@ export default function App() {
             />
           )}
 
+          {activeView === "folgas" && (
+            <TimeOffView
+              currentUser={currentUser}
+              professionals={professionals}
+              timeOff={timeOff}
+              onSaveTimeOff={handleSaveTimeOffEntry}
+              onDeleteTimeOff={handleDeleteTimeOffEntry}
+            />
+          )}
+
           {activeView === "metricas" && (
             <MetricsView 
               currentUser={currentUser}
               appointments={appointments}
               patients={patients}
               professionals={professionals}
+              settings={settings}
             />
           )}
 

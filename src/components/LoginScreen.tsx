@@ -264,18 +264,14 @@ export const LoginScreen: React.FC<LoginScreenProps> = ({ users, onLoginSuccess,
           </button>
         </form>
 
-        {/* Informative credentials shortcut helpful for clinical sandbox environment */}
         <div className="bg-[#F9F9F5] rounded-2xl p-4 border border-[#E5E5E0] space-y-2">
           <p className="text-[11px] font-semibold text-[#5A5A40] uppercase tracking-wider flex items-center gap-1">
             <ShieldCheck className="w-3.5 h-3.5 text-[#C17A63]" />
-            Acesso Rápido para Teste:
+            Acesso seguro
           </p>
-          <div className="grid grid-cols-1 gap-1 text-[10px] text-[#707060]">
-            <div>• <strong>Dra. Márcia:</strong> marciaodonto@yahoo.com.br <span className="text-[#C17A63] font-bold">(senha temporária: 123)</span></div>
-            <div>• <strong>Dra. Francisca:</strong> fran_ramalho@yahoo.com.br <span className="text-[#C17A63] font-bold">(senha temporária: 123)</span></div>
-            <div>• <strong>Admin:</strong> admin@franciscaemarcia.com.br <span className="opacity-60">(senha: qualquer)</span></div>
-            <div>• <strong>Recepção:</strong> recepcao@franciscaemarcia.com.br <span className="opacity-60">(senha: qualquer)</span></div>
-          </div>
+          <p className="text-[10px] text-[#707060]">
+            Use a conta cadastrada no backend. Em desenvolvimento, o backend pode iniciar com dados demo quando Supabase não estiver configurado.
+          </p>
         </div>
       </div>
     </div>
