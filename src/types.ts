@@ -58,10 +58,23 @@ export interface Appointment {
   confirmationStatus?: "pending" | "confirmed" | "declined";
   confirmationAnswer?: string;
   confirmationAnsweredAt?: string;
+  cancellationReason?: string;
+  cancelledAt?: string;
+  cancelledByUserId?: string;
   source?: "cal.com" | "internal" | "demo";
   startAt?: string;
   endAt?: string;
   timezone?: string;
+}
+
+export interface CalBookingSuccess {
+  uid?: string;
+  title?: string;
+  startTime?: string;
+  endTime?: string;
+  eventTypeId?: number | null;
+  status?: string;
+  professionalId: string;
 }
 
 export interface PatientAddress {

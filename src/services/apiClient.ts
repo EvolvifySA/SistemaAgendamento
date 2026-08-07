@@ -107,8 +107,11 @@ export const apiClient = {
       body: JSON.stringify({ status, notes })
     }),
 
+  findCalAppointment: (bookingUid: string) =>
+    request<{ appointment: Appointment | null }>(`/api/appointments/cal/${encodeURIComponent(bookingUid)}`),
+
   cancelCalBooking: (bookingUid: string, cancellationReason: string) =>
-    request<{ ok: boolean }>(`/api/cal/bookings/${encodeURIComponent(bookingUid)}/cancel`, {
+    request<{ ok: boolean; appointment: Appointment; calBooking: unknown; alreadyCancelled?: boolean }>(`/api/cal/bookings/${encodeURIComponent(bookingUid)}/cancel`, {
       method: "POST",
       body: JSON.stringify({ cancellationReason })
     }),

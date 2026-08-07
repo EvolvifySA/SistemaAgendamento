@@ -1,7 +1,7 @@
-import React, { useEffect, useMemo, useState } from "react";
-import Cal, { getCalApi } from "@calcom/embed-react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import Cal, { EmbedEvent, getCalApi } from "@calcom/embed-react";
 import { CalendarDays, ExternalLink, RefreshCw } from "lucide-react";
-import { BookingContext, Contact, Patient, Professional } from "../types";
+import { BookingContext, CalBookingSuccess, Contact, Patient, Professional } from "../types";
 import { normalizePhone } from "../utils/phone";
 
 interface CalInlineEmbedProps {
@@ -9,6 +9,8 @@ interface CalInlineEmbedProps {
   bookingContext?: BookingContext;
   bookingPatient?: Patient;
   bookingContact?: Contact;
+  instanceKey?: number;
+  onBookingSuccessful: (booking: CalBookingSuccess) => void;
 }
 
 function normalizeCalLink(value?: string): string {
@@ -31,22 +33,29 @@ function getPhoneForCal(patient?: Patient): string {
   return normalized ? `+${normalized}` : "";
 }
 
-function getNamespace(professional?: Professional, reloadToken = 0, bookingContext?: BookingContext) {
+function getNamespace(professional?: Professional, reloadToken = 0, bookingContext?: BookingContext, instanceKey = 0) {
   const stableId = professional?.calEventTypeId || professional?.id || "empty";
   const bookingId = bookingContext ? `${bookingContext.patientId}-${bookingContext.intent}` : "no-patient";
-  return `dentist-${stableId}-${bookingId}-${reloadToken}`.replace(/[^a-zA-Z0-9_-]/g, "-");
+  return `dentist-${stableId}-${bookingId}-${instanceKey}-${reloadToken}`.replace(/[^a-zA-Z0-9_-]/g, "-");
 }
 
 export const CalInlineEmbed: React.FC<CalInlineEmbedProps> = ({
   professional,
   bookingContext,
   bookingPatient,
-  bookingContact
+  bookingContact,
+  instanceKey = 0,
+  onBookingSuccessful
 }) => {
   const [reloadToken, setReloadToken] = useState(0);
   const [status, setStatus] = useState<"empty" | "loading" | "ready" | "slow">("loading");
   const calLink = normalizeCalLink(professional?.calUsername);
-  const namespace = useMemo(() => getNamespace(professional, reloadToken, bookingContext), [professional, reloadToken, bookingContext]);
+  const namespace = useMemo(
+    () => getNamespace(professional, reloadToken, bookingContext, instanceKey),
+    [professional, reloadToken, bookingContext, instanceKey]
+  );
+  const onBookingSuccessfulRef = useRef(onBookingSuccessful);
+  const lastBookingKeyRef = useRef("");
   const bookingPhone = getPhoneForCal(bookingPatient);
   const bookingEmail = bookingPatient?.email || bookingContact?.email || "";
   const prefillConfig = {
@@ -69,6 +78,10 @@ export const CalInlineEmbed: React.FC<CalInlineEmbedProps> = ({
   };
 
   useEffect(() => {
+    onBookingSuccessfulRef.current = onBookingSuccessful;
+  }, [onBookingSuccessful]);
+
+  useEffect(() => {
     if (!professional || !calLink) {
       setStatus("empty");
       return;
@@ -82,13 +95,34 @@ export const CalInlineEmbed: React.FC<CalInlineEmbedProps> = ({
     const readyTimer = window.setTimeout(() => {
       setStatus((current) => current === "loading" ? "ready" : current);
     }, 1800);
+    let calApi: Awaited<ReturnType<typeof getCalApi>> | undefined;
+    const handleBookingSuccessful = (event: EmbedEvent<"bookingSuccessfulV2">) => {
+      const booking = event.detail.data;
+      const bookingKey = booking.uid || `${booking.eventTypeId || "event"}-${booking.startTime || "unknown"}`;
+      if (lastBookingKeyRef.current === bookingKey) return;
+      lastBookingKeyRef.current = bookingKey;
+      onBookingSuccessfulRef.current({
+        uid: booking.uid,
+        title: booking.title,
+        startTime: booking.startTime,
+        endTime: booking.endTime,
+        eventTypeId: booking.eventTypeId,
+        status: booking.status,
+        professionalId: professional.id
+      });
+    };
 
     (async () => {
       const cal = await getCalApi({ namespace });
       if (cancelled) return;
+      calApi = cal;
       cal("ui", {
         hideEventTypeDetails: false,
         layout: "month_view"
+      });
+      cal("on", {
+        action: "bookingSuccessfulV2",
+        callback: handleBookingSuccessful
       });
     })();
 
@@ -96,6 +130,10 @@ export const CalInlineEmbed: React.FC<CalInlineEmbedProps> = ({
       cancelled = true;
       window.clearTimeout(slowTimer);
       window.clearTimeout(readyTimer);
+      calApi?.("off", {
+        action: "bookingSuccessfulV2",
+        callback: handleBookingSuccessful
+      });
     };
   }, [professional, calLink, namespace]);
 

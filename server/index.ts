@@ -34,6 +34,7 @@ const { Pool } = pg;
 const app = express();
 const port = Number(process.env.PORT || 3001);
 const calApiVersion = process.env.CAL_API_VERSION || "2024-06-14";
+const calBookingsApiVersion = process.env.CAL_BOOKINGS_API_VERSION || "2026-02-25";
 const databaseUrl = process.env.DATABASE_URL;
 const isPostgresConfigured = Boolean(databaseUrl);
 const authSecret = process.env.AUTH_SECRET || "dev-clinic-auth-secret";
@@ -473,6 +474,16 @@ app.get("/api/appointments", async (req, res) => {
   }
 });
 
+app.get("/api/appointments/cal/:uid", async (req, res) => {
+  try {
+    const data = await bootstrap();
+    const appointment = data.appointments.find((item) => item.calBookingUid === req.params.uid) || null;
+    res.json({ appointment });
+  } catch (error) {
+    res.status(500).send(error instanceof Error ? error.message : "Erro ao localizar agendamento Cal.com.");
+  }
+});
+
 app.put("/api/patients/bulk", async (req, res) => {
   const rows = withPatientPhones(req.body.patients || []);
   demoState.patients = rows;
@@ -786,17 +797,62 @@ function extractCalUsername(eventTypeResponse: unknown, meResponse?: unknown) {
   return username && slug ? `${username}/${slug}` : "";
 }
 
-app.post("/api/cal/bookings/:uid/cancel", async (req, res) => {
+app.post("/api/cal/bookings/:uid/cancel", async (req: AuthenticatedRequest, res) => {
   try {
     const { uid } = req.params;
+    const cancellationReason = String(req.body?.cancellationReason || "").trim();
+    if (!cancellationReason) return res.status(400).send("Informe o motivo do cancelamento.");
+
+    const data = await bootstrap();
+    const appointment = data.appointments.find((item) => item.calBookingUid === uid);
+    if (!appointment) return res.status(404).send("Agendamento Cal.com nao encontrado no painel.");
+    if (appointment.status === "Cancelado") {
+      return res.json({ ok: true, appointment, calBooking: null, alreadyCancelled: true });
+    }
+
+    const professional = data.professionals.find((item) => item.id === appointment.professionalId);
+    if (!professional) return res.status(409).send("Dentista do agendamento nao encontrada.");
+
+    if (req.currentUser?.role === "Doutora") {
+      const currentProfessional = data.professionals.find((item) =>
+        item.email?.toLowerCase() === req.currentUser?.email.toLowerCase()
+      );
+      if (!currentProfessional || currentProfessional.id !== appointment.professionalId) {
+        return res.status(403).send("A doutora somente pode cancelar os proprios atendimentos.");
+      }
+    }
+
+    const token = getProfessionalCalToken(professional);
+    if (!token) {
+      return res.status(409).send(`Configure ${professional.calApiKeyEnvVar || "CAL_API_KEY_DENTISTA"} no backend.`);
+    }
+
     const result = await calRequest(`/v2/bookings/${encodeURIComponent(uid)}/cancel`, {
       method: "POST",
-      body: JSON.stringify({ cancellationReason: req.body.cancellationReason || "Cancelado pelo painel" })
+      body: JSON.stringify({ cancellationReason, cancelSubsequentBookings: false })
+    }, token, calBookingsApiVersion);
+
+    const updated: Appointment = {
+      ...appointment,
+      status: "Cancelado",
+      calStatus: "cancelled",
+      cancellationReason,
+      cancelledAt: new Date().toISOString(),
+      cancelledByUserId: req.currentUser?.id
+    };
+    demoState.appointments = demoState.appointments.map((item) => item.id === updated.id ? updated : item);
+    if (pool) await upsertRow(pool, "appointments_cache", updated as unknown as Record<string, unknown>);
+
+    await audit("cal.booking.cancelled", {
+      uid,
+      appointmentId: appointment.id,
+      professionalId: professional.id,
+      cancellationReason,
+      cancelledByUserId: req.currentUser?.id
     });
-    await audit("cal.booking.cancelled", { uid });
-    res.json({ ok: true, result });
+    res.json({ ok: true, appointment: updated, calBooking: result });
   } catch (error) {
-    res.status(500).send(error instanceof Error ? error.message : "Erro ao cancelar no Cal.com.");
+    res.status(502).send(error instanceof Error ? error.message : "Erro ao cancelar no Cal.com.");
   }
 });
 
@@ -955,6 +1011,23 @@ function mapCalStatus(trigger: string): AppointmentStatus {
   return "Agendado";
 }
 
+function dateTimePartsInZone(value: Date, timeZone: string) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23"
+  }).formatToParts(value);
+  const part = (type: Intl.DateTimeFormatPartTypes) => parts.find((item) => item.type === type)?.value || "";
+  return {
+    date: `${part("year")}-${part("month")}-${part("day")}`,
+    time: `${part("hour")}:${part("minute")}`
+  };
+}
+
 function getBookingMetadata(booking: Record<string, unknown>): Record<string, unknown> {
   const metadata = booking.metadata || (booking.payload as { metadata?: unknown } | undefined)?.metadata;
   return metadata && typeof metadata === "object" ? metadata as Record<string, unknown> : {};
@@ -1083,15 +1156,22 @@ app.post("/api/webhooks/cal", async (req, res) => {
     if (booking?.uid && startAt) {
       const start = new Date(String(startAt));
       const end = endAt ? new Date(String(endAt)) : new Date(start.getTime() + 30 * 60000);
+      const appointmentTimezone = professional.timezone || data.settings.timezone || "America/Sao_Paulo";
+      const localStart = dateTimePartsInZone(start, appointmentTimezone);
+      const localEnd = dateTimePartsInZone(end, appointmentTimezone);
+      const existingAppointment = data.appointments.find((item) => item.calBookingUid === String(booking.uid));
+      const cancellationReason = typeof booking.cancellationReason === "string" ? booking.cancellationReason : undefined;
+      const isCancelled = trigger.includes("CANCELLED");
       const appointment: Appointment = {
+        ...existingAppointment,
         id: `cal-${booking.uid}`,
-        patientId: patient?.id || "",
-        patientName: String(attendee.name || booking?.title || patient?.name || "Paciente Cal.com"),
-        patientPhone: phone,
+        patientId: patient?.id || existingAppointment?.patientId || "",
+        patientName: String(attendee.name || patient?.name || existingAppointment?.patientName || booking?.title || "Paciente Cal.com"),
+        patientPhone: phone || existingAppointment?.patientPhone || "",
         professionalId: professional.id,
-        date: start.toISOString().slice(0, 10),
-        time: start.toISOString().slice(11, 16),
-        endTime: end.toISOString().slice(11, 16),
+        date: localStart.date,
+        time: localStart.time,
+        endTime: localEnd.time,
         duration: Math.max(15, Math.round((end.getTime() - start.getTime()) / 60000)),
         type: String((booking?.eventType as { title?: unknown } | undefined)?.title || "Consulta"),
         status: mapCalStatus(trigger),
@@ -1101,7 +1181,11 @@ app.post("/api/webhooks/cal", async (req, res) => {
         source: "cal.com",
         startAt: start.toISOString(),
         endAt: end.toISOString(),
-        timezone: typeof booking?.timeZone === "string" ? booking.timeZone : "America/Sao_Paulo"
+        timezone: appointmentTimezone,
+        ...(isCancelled ? {
+          cancellationReason: cancellationReason || existingAppointment?.cancellationReason,
+          cancelledAt: existingAppointment?.cancelledAt || (typeof booking.updatedAt === "string" ? booking.updatedAt : new Date().toISOString())
+        } : {})
       };
 
       demoState.appointments = [appointment, ...demoState.appointments.filter((item) => item.id !== appointment.id)];

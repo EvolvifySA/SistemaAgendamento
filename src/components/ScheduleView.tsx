@@ -1,7 +1,7 @@
-import React, { useEffect, useMemo, useState } from "react";
-import { Appointment, AppointmentStatus, BookingContext, ClinicSettings, Contact, Patient, Professional, SystemUser } from "../types";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Appointment, BookingContext, CalBookingSuccess, ClinicSettings, Contact, Patient, Professional, SystemUser } from "../types";
 import { CalInlineEmbed } from "./CalInlineEmbed";
-import { BookOpenCheck, CalendarDays, CheckCircle2, ExternalLink, UserRoundCheck, X } from "lucide-react";
+import { ArrowLeft, BookOpenCheck, CalendarCheck2, CalendarDays, CheckCircle2, ExternalLink, LoaderCircle, RefreshCw, UserRoundCheck, X } from "lucide-react";
 
 interface ScheduleViewProps {
   appointments: Appointment[];
@@ -9,18 +9,22 @@ interface ScheduleViewProps {
   professionals: Professional[];
   currentUser: SystemUser;
   settings: ClinicSettings;
-  dataMode: "production" | "demo";
-  onAddAppointment: (app: Omit<Appointment, "id">) => void;
-  onUpdateAppointmentStatus: (id: string, status: AppointmentStatus, notes?: string) => void;
-  onUpdateAppointment?: (updated: Appointment) => void;
   onOpenNewPatient: () => void;
   bookingContext?: BookingContext;
   bookingPatient?: Patient;
   bookingContact?: Contact;
   preferredProfessionalId?: string;
   onClearBookingContext: () => void;
-  selectedAppointmentFromDashboard: Appointment | null;
-  clearSelectedAppointmentFromDashboard: () => void;
+  onSyncCalBooking: (booking: CalBookingSuccess) => Promise<Appointment | null>;
+  onViewAppointment: (appointment: Appointment) => void;
+  onBackToDashboard: () => void;
+  onStartNewBooking: (professionalId: string) => void;
+}
+
+interface CompletedBookingState {
+  booking: CalBookingSuccess;
+  patientName: string;
+  patientPhone: string;
 }
 
 const tutorialSteps = [
@@ -37,18 +41,16 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
   professionals,
   currentUser,
   settings,
-  dataMode,
-  onAddAppointment,
-  onUpdateAppointmentStatus,
-  onUpdateAppointment,
   onOpenNewPatient,
   bookingContext,
   bookingPatient,
   bookingContact,
   preferredProfessionalId,
   onClearBookingContext,
-  selectedAppointmentFromDashboard,
-  clearSelectedAppointmentFromDashboard
+  onSyncCalBooking,
+  onViewAppointment,
+  onBackToDashboard,
+  onStartNewBooking
 }) => {
   const defaultProfessionalId = useMemo(() => {
     if (currentUser.role !== "Doutora") return "";
@@ -64,6 +66,11 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
 
   const [selectedProfessionalId, setSelectedProfessionalId] = useState(defaultProfessionalId || visibleProfessionals[0]?.id || "");
   const [visitedProfessionalIds, setVisitedProfessionalIds] = useState<string[]>([]);
+  const [completedBooking, setCompletedBooking] = useState<CompletedBookingState | null>(null);
+  const [syncedAppointment, setSyncedAppointment] = useState<Appointment | null>(null);
+  const [syncStatus, setSyncStatus] = useState<"idle" | "syncing" | "synced" | "delayed">("idle");
+  const [embedInstanceKey, setEmbedInstanceKey] = useState(0);
+  const mountedRef = useRef(true);
 
   const selectedProfessional = useMemo(() => {
     return visibleProfessionals.find((professional) => professional.id === selectedProfessionalId) || visibleProfessionals[0];
@@ -82,16 +89,17 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
   }, [defaultProfessionalId, selectedProfessionalId]);
 
   useEffect(() => {
-    if (!selectedAppointmentFromDashboard) return;
-    setSelectedProfessionalId(selectedAppointmentFromDashboard.professionalId);
-    clearSelectedAppointmentFromDashboard();
-  }, [selectedAppointmentFromDashboard, clearSelectedAppointmentFromDashboard]);
-
-  useEffect(() => {
     if (!preferredProfessionalId) return;
     if (!visibleProfessionals.some((professional) => professional.id === preferredProfessionalId)) return;
     setSelectedProfessionalId(preferredProfessionalId);
   }, [preferredProfessionalId, visibleProfessionals]);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   const mountedProfessionals = useMemo(() => {
     return visibleProfessionals.filter((professional) =>
@@ -114,10 +122,56 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
   }, [appointments, selectedProfessional?.id, settings.timezone]);
 
   void patients;
-  void dataMode;
-  void onAddAppointment;
-  void onUpdateAppointmentStatus;
-  void onUpdateAppointment;
+
+  const syncBooking = useCallback(async (booking: CalBookingSuccess) => {
+    if (!booking.uid) {
+      setSyncStatus("delayed");
+      return;
+    }
+
+    setSyncStatus("syncing");
+    const appointment = await onSyncCalBooking(booking);
+    if (!mountedRef.current) return;
+    if (appointment) {
+      setSyncedAppointment(appointment);
+      setSyncStatus("synced");
+    } else {
+      setSyncStatus("delayed");
+    }
+  }, [onSyncCalBooking]);
+
+  const handleBookingSuccessful = useCallback((booking: CalBookingSuccess) => {
+    setCompletedBooking({
+      booking,
+      patientName: bookingPatient?.name || bookingContact?.name || "Agendamento Cal.com",
+      patientPhone: bookingPatient?.phone || bookingContact?.phone || ""
+    });
+    setSyncedAppointment(null);
+    void syncBooking(booking);
+  }, [bookingContact?.name, bookingContact?.phone, bookingPatient?.name, bookingPatient?.phone, syncBooking]);
+
+  const resetForNewBooking = (professionalId: string) => {
+    setCompletedBooking(null);
+    setSyncedAppointment(null);
+    setSyncStatus("idle");
+    setEmbedInstanceKey((current) => current + 1);
+    onStartNewBooking(professionalId);
+  };
+
+  const formatBookingMoment = (value?: string) => {
+    if (!value) return "Horario nao informado";
+    const parsed = new Date(value);
+    if (Number.isNaN(parsed.getTime())) return value;
+    return new Intl.DateTimeFormat("pt-BR", {
+      timeZone: settings.timezone || "America/Sao_Paulo",
+      weekday: "long",
+      day: "2-digit",
+      month: "2-digit",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit"
+    }).format(parsed);
+  };
 
   return (
     <div className="space-y-6 animate-fade-in">
@@ -208,12 +262,91 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
                 key={professional.id}
                 className={selectedProfessional?.id === professional.id ? "block" : "hidden"}
               >
-                <CalInlineEmbed
-                  professional={professional}
-                  bookingContext={bookingContext}
-                  bookingPatient={bookingPatient}
-                  bookingContact={bookingContact}
-                />
+                {completedBooking?.booking.professionalId === professional.id ? (
+                  <div className="bg-white border border-[#D8D8C0] rounded-2xl shadow-sm overflow-hidden">
+                    <div className="px-6 py-8 sm:px-10 sm:py-10 text-center border-b border-[#E5E5E0]">
+                      <div className="w-12 h-12 mx-auto rounded-full bg-green-50 border border-green-200 flex items-center justify-center text-green-700">
+                        <CalendarCheck2 className="w-6 h-6" />
+                      </div>
+                      <p className="text-[10px] uppercase font-bold text-[#C17A63] mt-4">Agendamento concluido</p>
+                      <h2 className="font-serif text-2xl text-[#5A5A40] mt-1">
+                        {syncedAppointment?.patientName || completedBooking.patientName}
+                      </h2>
+                      <p className="text-sm text-[#1A1A1A] mt-3 capitalize">
+                        {formatBookingMoment(completedBooking.booking.startTime)}
+                      </p>
+                      <p className="text-xs text-[#707060] mt-1">
+                        {professional.name}{(syncedAppointment?.patientPhone || completedBooking.patientPhone)
+                          ? ` - ${syncedAppointment?.patientPhone || completedBooking.patientPhone}`
+                          : ""}
+                      </p>
+                    </div>
+
+                    <div className="px-6 py-5 sm:px-10 flex flex-col gap-4">
+                      <div className={`flex items-center gap-2 text-xs font-semibold ${
+                        syncStatus === "synced" ? "text-green-700" : syncStatus === "delayed" ? "text-amber-800" : "text-[#707060]"
+                      }`}>
+                        {syncStatus === "syncing" && <LoaderCircle className="w-4 h-4 animate-spin" />}
+                        {syncStatus === "synced" && <CheckCircle2 className="w-4 h-4" />}
+                        {syncStatus === "delayed" && <RefreshCw className="w-4 h-4" />}
+                        <span>
+                          {syncStatus === "synced"
+                            ? "Agendamento sincronizado com o painel."
+                            : syncStatus === "delayed"
+                              ? "O webhook ainda nao apareceu no painel."
+                              : "Sincronizando com o painel..."}
+                        </span>
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                        <button
+                          type="button"
+                          onClick={onBackToDashboard}
+                          className="inline-flex items-center justify-center gap-2 px-4 py-3 border border-[#D8D8C0] text-[#5A5A40] rounded-lg text-xs font-bold hover:bg-[#F5F5F0]"
+                        >
+                          <ArrowLeft className="w-4 h-4" />
+                          Dashboard
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => syncedAppointment && onViewAppointment(syncedAppointment)}
+                          disabled={!syncedAppointment}
+                          className="inline-flex items-center justify-center gap-2 px-4 py-3 bg-[#5A5A40] text-white rounded-lg text-xs font-bold disabled:opacity-40"
+                        >
+                          <CalendarDays className="w-4 h-4" />
+                          Ver agendamento
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => resetForNewBooking(professional.id)}
+                          className="inline-flex items-center justify-center gap-2 px-4 py-3 border border-[#D8D8C0] text-[#5A5A40] rounded-lg text-xs font-bold hover:bg-[#F5F5F0]"
+                        >
+                          <RefreshCw className="w-4 h-4" />
+                          Novo agendamento
+                        </button>
+                      </div>
+
+                      {syncStatus === "delayed" && (
+                        <button
+                          type="button"
+                          onClick={() => void syncBooking(completedBooking.booking)}
+                          className="self-start text-xs font-bold text-[#5A5A40] underline underline-offset-4"
+                        >
+                          Tentar sincronizar novamente
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                ) : (
+                  <CalInlineEmbed
+                    professional={professional}
+                    bookingContext={bookingContext}
+                    bookingPatient={bookingPatient}
+                    bookingContact={bookingContact}
+                    instanceKey={embedInstanceKey}
+                    onBookingSuccessful={handleBookingSuccessful}
+                  />
+                )}
               </div>
             ))}
           </div>

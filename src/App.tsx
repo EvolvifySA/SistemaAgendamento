@@ -4,13 +4,13 @@ import {
   Patient, 
   Appointment, 
   ClinicSettings, 
-  AppointmentStatus,
   Professional,
   Contact,
   TimeOffEntry,
   BookingContext,
   ClinicalReminder,
-  AuthSession
+  AuthSession,
+  CalBookingSuccess
 } from "./types";
 import {
   INITIAL_SETTINGS,
@@ -32,6 +32,7 @@ import { ProfessionalsView } from "./components/ProfessionalsView";
 import { MetricsView } from "./components/MetricsView";
 import { ContactsView } from "./components/ContactsView";
 import { TimeOffView } from "./components/TimeOffView";
+import { AppointmentDetailsModal } from "./components/AppointmentDetailsModal";
 
 // Icons
 import { 
@@ -81,14 +82,13 @@ export default function App() {
   const [clinicalReminders, setClinicalReminders] = useState<ClinicalReminder[]>([]);
   const [timeOff, setTimeOff] = useState<TimeOffEntry[]>([]);
   const [settings, setSettings] = useState<ClinicSettings>(INITIAL_SETTINGS);
-  const [dataMode, setDataMode] = useState<"production" | "demo">("demo");
   const [loadingData, setLoadingData] = useState(true);
   const [loadError, setLoadError] = useState("");
 
   // Global search & UI states
   const [globalSearch, setGlobalSearch] = useState("");
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
-  const [dashboardSelectedApp, setDashboardSelectedApp] = useState<Appointment | null>(null);
+  const [selectedAppointment, setSelectedAppointment] = useState<Appointment | null>(null);
   const [bookingContext, setBookingContext] = useState<BookingContext | undefined>();
   const [bookingPreferredProfessionalId, setBookingPreferredProfessionalId] = useState("");
   const [toastMessage, setToastMessage] = useState("");
@@ -108,7 +108,6 @@ export default function App() {
     setClinicalReminders(data.clinicalReminders || []);
     setTimeOff(timeOffSource);
     setSettings(data.settings);
-    setDataMode(data.mode);
   };
 
   const loadAppData = async () => {
@@ -195,30 +194,6 @@ export default function App() {
     savePatients(updated);
   };
 
-  const handleAddAppointment = (newAppData: Omit<Appointment, "id">) => {
-    const newApp: Appointment = {
-      ...newAppData,
-      id: `app-${Date.now()}`
-    };
-    const updated = [newApp, ...appointments];
-    saveAppointments(updated);
-    
-    // Append to patient history
-    const pat = patients.find(p => p.id === newApp.patientId);
-    if (pat) {
-      const updatedHistory = [
-        { date: newApp.date, type: newApp.type, notes: newApp.notes, status: newApp.status },
-        ...pat.history
-      ];
-      const updatedPatientList = patients.map(p => 
-        p.id === pat.id 
-          ? { ...p, history: updatedHistory, lastAppointmentDate: newApp.date } 
-          : p
-      );
-      savePatients(updatedPatientList);
-    }
-  };
-
   const handleUpdatePatient = (updatedPatient: Patient) => {
     const updated = patients.map(p => p.id === updatedPatient.id ? { ...updatedPatient, normalizedPhone: normalizePhone(updatedPatient.phone) } : p);
     savePatients(updated);
@@ -279,72 +254,6 @@ export default function App() {
     saveProfessionals(updated);
   };
 
-  const handleUpdateAppointment = (updatedApp: Appointment) => {
-    const updated = appointments.map(app => app.id === updatedApp.id ? updatedApp : app);
-    saveAppointments(updated);
-  };
-
-  const handleUpdateAppointmentStatus = (id: string, status: AppointmentStatus, customNotes?: string) => {
-    const targetBeforeUpdate = appointments.find(a => a.id === id);
-    if (status === "Cancelado" && targetBeforeUpdate?.calBookingUid) {
-      void apiClient.cancelCalBooking(targetBeforeUpdate.calBookingUid, customNotes || "Cancelado pelo painel");
-    }
-    void apiClient.updateAppointmentStatus(id, status, customNotes);
-
-    const updated = appointments.map(app => {
-      if (app.id === id) {
-        return { 
-          ...app, 
-          status,
-          notes: customNotes !== undefined ? customNotes : app.notes 
-        };
-      }
-      return app;
-    });
-    saveAppointments(updated);
-
-    // Sync in patient stats if they missed (Faltou) or completed (Atendido)
-    const targetApp = targetBeforeUpdate;
-    if (targetApp) {
-      const patientId = targetApp.patientId;
-      const pat = patients.find(p => p.id === patientId);
-      if (pat) {
-        let absencesCount = pat.absencesCount;
-        if (status === "Faltou" && targetApp.status !== "Faltou") {
-          absencesCount += 1;
-        } else if (status !== "Faltou" && targetApp.status === "Faltou") {
-          absencesCount = Math.max(0, absencesCount - 1);
-        }
-
-        // Update history entry in patient card
-        const updatedHistory = pat.history.map(h => {
-          if (h.date === targetApp.date && h.type === targetApp.type) {
-            return { ...h, status };
-          }
-          return h;
-        });
-
-        // If history entry was not found, append it
-        const exists = pat.history.some(h => h.date === targetApp.date && h.type === targetApp.type);
-        if (!exists) {
-          updatedHistory.unshift({
-            date: targetApp.date,
-            type: targetApp.type,
-            notes: customNotes || targetApp.notes,
-            status
-          });
-        }
-
-        const updatedPatients = patients.map(p => 
-          p.id === patientId 
-            ? { ...p, absencesCount, history: updatedHistory } 
-            : p
-        );
-        savePatients(updatedPatients);
-      }
-    }
-  };
-
   // Login/logout logic
   const handleLogin = async (session: AuthSession) => {
     apiClient.setAuthToken(session.token);
@@ -359,12 +268,48 @@ export default function App() {
     setCurrentUser(null);
     setBookingContext(undefined);
     setBookingPreferredProfessionalId("");
+    setSelectedAppointment(null);
   };
 
   // Quick navigation helpers
   const handleSelectAppointmentFromDashboard = (app: Appointment) => {
-    setDashboardSelectedApp(app);
-    setActiveView("agenda");
+    setSelectedAppointment(app);
+  };
+
+  const handleSyncCalBooking = async (booking: CalBookingSuccess): Promise<Appointment | null> => {
+    setBookingContext(undefined);
+    setBookingPreferredProfessionalId("");
+    if (!booking.uid) return null;
+
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      try {
+        const result = await apiClient.findCalAppointment(booking.uid);
+        if (result.appointment) {
+          setAppointments((current) => [
+            result.appointment as Appointment,
+            ...current.filter((item) => item.id !== result.appointment?.id)
+          ]);
+          return result.appointment;
+        }
+      } catch {
+        // A transient API failure should not discard the successful Cal.com booking.
+      }
+
+      if (attempt < 9) {
+        await new Promise((resolve) => window.setTimeout(resolve, 1000));
+      }
+    }
+
+    return null;
+  };
+
+  const handleCancelAppointment = async (appointment: Appointment, cancellationReason: string) => {
+    if (!appointment.calBookingUid) throw new Error("Este agendamento nao possui identificador do Cal.com.");
+    const result = await apiClient.cancelCalBooking(appointment.calBookingUid, cancellationReason);
+    setAppointments((current) => current.map((item) => item.id === result.appointment.id ? result.appointment : item));
+    setSelectedAppointment(result.appointment);
+    showToast(result.alreadyCancelled ? "O agendamento ja estava cancelado." : "Agendamento cancelado no Cal.com.");
+    return result.appointment;
   };
 
   const findContactForPatient = (patient: Patient) => {
@@ -736,10 +681,6 @@ export default function App() {
               professionals={professionals}
               currentUser={currentUser}
               settings={settings}
-              dataMode={dataMode}
-              onAddAppointment={handleAddAppointment}
-              onUpdateAppointmentStatus={handleUpdateAppointmentStatus}
-              onUpdateAppointment={handleUpdateAppointment}
               onOpenNewPatient={() => {
                 setActiveView("pacientes");
                 setTimeout(() => {
@@ -755,8 +696,17 @@ export default function App() {
                 setBookingContext(undefined);
                 setBookingPreferredProfessionalId("");
               }}
-              selectedAppointmentFromDashboard={dashboardSelectedApp}
-              clearSelectedAppointmentFromDashboard={() => setDashboardSelectedApp(null)}
+              onSyncCalBooking={handleSyncCalBooking}
+              onViewAppointment={setSelectedAppointment}
+              onBackToDashboard={() => {
+                setBookingContext(undefined);
+                setBookingPreferredProfessionalId("");
+                setActiveView("dashboard");
+              }}
+              onStartNewBooking={(professionalId) => {
+                setBookingContext(undefined);
+                openCalBookingArea(professionalId);
+              }}
             />
           )}
 
@@ -844,6 +794,14 @@ export default function App() {
         </main>
 
       </div>
+
+      <AppointmentDetailsModal
+        appointment={selectedAppointment}
+        professionals={professionals}
+        currentUser={currentUser}
+        onClose={() => setSelectedAppointment(null)}
+        onCancel={handleCancelAppointment}
+      />
 
       {toastMessage && (
         <div className="fixed right-5 bottom-5 z-50 bg-[#1A1A1A] text-white px-5 py-3 rounded-2xl shadow-xl text-xs font-bold border border-white/10">
