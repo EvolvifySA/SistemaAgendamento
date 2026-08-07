@@ -7,10 +7,12 @@ import {
   AppointmentStatus,
   Professional,
   Contact,
-  TimeOffEntry
+  TimeOffEntry,
+  BookingContext,
+  ClinicalReminder,
+  AuthSession
 } from "./types";
 import {
-  INITIAL_USERS,
   INITIAL_SETTINGS,
   INITIAL_CONTACTS,
   INITIAL_TIME_OFF
@@ -59,7 +61,8 @@ const linkContactsToPatients = (contacts: Contact[], patients: Patient[]): Conta
     return {
       ...contact,
       normalizedPhone,
-      patientId: contact.patientId || matchedPatient?.id
+      patientId: contact.patientId || matchedPatient?.id,
+      professionalIds: contact.professionalIds || []
     };
   });
 };
@@ -75,6 +78,7 @@ export default function App() {
   const [users, setUsers] = useState<SystemUser[]>([]);
   const [professionals, setProfessionals] = useState<Professional[]>([]);
   const [contacts, setContacts] = useState<Contact[]>([]);
+  const [clinicalReminders, setClinicalReminders] = useState<ClinicalReminder[]>([]);
   const [timeOff, setTimeOff] = useState<TimeOffEntry[]>([]);
   const [settings, setSettings] = useState<ClinicSettings>(INITIAL_SETTINGS);
   const [dataMode, setDataMode] = useState<"production" | "demo">("demo");
@@ -85,36 +89,56 @@ export default function App() {
   const [globalSearch, setGlobalSearch] = useState("");
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [dashboardSelectedApp, setDashboardSelectedApp] = useState<Appointment | null>(null);
+  const [bookingContext, setBookingContext] = useState<BookingContext | undefined>();
+  const [bookingPreferredProfessionalId, setBookingPreferredProfessionalId] = useState("");
+  const [toastMessage, setToastMessage] = useState("");
+
+  const hydrateData = (data: Awaited<ReturnType<typeof apiClient.bootstrap>>) => {
+    const normalizedPatients = data.patients.map(p => ({
+      ...p,
+      normalizedPhone: p.normalizedPhone || normalizePhone(p.phone)
+    }));
+    setPatients(normalizedPatients);
+    setAppointments(data.appointments);
+    setUsers(data.users);
+    setProfessionals(data.professionals);
+    const contactsSource = data.mode === "demo" && data.contacts.length === 0 ? INITIAL_CONTACTS : data.contacts;
+    const timeOffSource = data.mode === "demo" && data.timeOff.length === 0 ? INITIAL_TIME_OFF : data.timeOff;
+    setContacts(linkContactsToPatients(contactsSource, normalizedPatients));
+    setClinicalReminders(data.clinicalReminders || []);
+    setTimeOff(timeOffSource);
+    setSettings(data.settings);
+    setDataMode(data.mode);
+  };
+
+  const loadAppData = async () => {
+    const data = await apiClient.bootstrap();
+    hydrateData(data);
+  };
+
+  const showToast = (message: string) => {
+    setToastMessage(message);
+    window.setTimeout(() => setToastMessage(""), 3600);
+  };
 
   // Load state from local storage or mock files on startup
   useEffect(() => {
     const load = async () => {
-      try {
-        const data = await apiClient.bootstrap();
-        const normalizedPatients = data.patients.map(p => ({
-          ...p,
-          normalizedPhone: p.normalizedPhone || normalizePhone(p.phone)
-        }));
-        setPatients(normalizedPatients);
-        setAppointments(data.appointments);
-        setUsers(data.users);
-        setProfessionals(data.professionals);
-        const contactsSource = data.mode === "demo" && data.contacts.length === 0 ? INITIAL_CONTACTS : data.contacts;
-        const timeOffSource = data.mode === "demo" && data.timeOff.length === 0 ? INITIAL_TIME_OFF : data.timeOff;
-        setContacts(linkContactsToPatients(contactsSource, normalizedPatients));
-        setTimeOff(timeOffSource);
-        setSettings(data.settings);
-        setDataMode(data.mode);
+      const savedToken = window.sessionStorage.getItem("clinic_auth_token");
+      if (!savedToken) {
+        setLoadingData(false);
+        return;
+      }
 
-        const savedSession = window.sessionStorage.getItem("clinic_session");
-        if (savedSession) {
-          setCurrentUser(JSON.parse(savedSession));
-        } else if (data.mode === "demo") {
-          const defaultAdmin = data.users.find(u => u.role === "Administrador") || data.users[0] || INITIAL_USERS[0];
-          setCurrentUser(defaultAdmin);
-        }
+      try {
+        apiClient.setAuthToken(savedToken);
+        const session = await apiClient.me();
+        setCurrentUser(session.user);
+        await loadAppData();
       } catch (error) {
-        setLoadError(error instanceof Error ? error.message : "Falha ao carregar dados da API.");
+        apiClient.setAuthToken("");
+        setCurrentUser(null);
+        setLoadError("");
       } finally {
         setLoadingData(false);
       }
@@ -122,17 +146,7 @@ export default function App() {
 
     load();
 
-    // Auto log in as Admin by default for first experience to make it fast to explore,
-    // but allow logging out to test other accounts!
-    const savedSession = null;
-    if (false && savedSession) {
-      setCurrentUser(savedSession);
-    } else if (false) {
       // Set default initial logged-in user as Roberta (Recepção) or Lucas (Admin)
-      // Let's boot with Lucas (Admin) so they see all menus instantly
-      const defaultAdmin = INITIAL_USERS.find(u => u.role === "Administrador") || INITIAL_USERS[0];
-      setCurrentUser(defaultAdmin);
-    }
   }, []);
 
   // Sync data stores helper
@@ -146,11 +160,6 @@ export default function App() {
   const saveAppointments = (updatedList: Appointment[]) => {
     setAppointments(updatedList);
     void apiClient.saveAppointments(updatedList);
-  };
-
-  const saveUsers = (updatedList: SystemUser[]) => {
-    setUsers(updatedList);
-    void apiClient.saveUsers(updatedList);
   };
 
   const saveProfessionals = (updatedList: Professional[]) => {
@@ -184,7 +193,6 @@ export default function App() {
     };
     const updated = [newPatient, ...patients];
     savePatients(updated);
-    setSelectedPatientInView(newPatient);
   };
 
   const handleAddAppointment = (newAppData: Omit<Appointment, "id">) => {
@@ -224,24 +232,37 @@ export default function App() {
     saveAppointments(updatedApps);
   };
 
-  const handleAddUser = (newUserData: Omit<SystemUser, "id">) => {
-    const newUser: SystemUser = {
-      ...newUserData,
-      id: `usr-${Date.now()}`
-    };
-    const updated = [...users, newUser];
-    saveUsers(updated);
+  const handleAddUser = async (newUserData: Omit<SystemUser, "id" | "needsPasswordChange"> & { password: string }) => {
+    const created = await apiClient.createUser(newUserData);
+    setUsers(current => [...current, created]);
+    showToast(`Usuario ${created.name} criado com acesso ativo.`);
   };
 
-  const handleUpdateUser = (updatedUser: SystemUser) => {
-    const updated = users.map(u => u.id === updatedUser.id ? updatedUser : u);
-    saveUsers(updated);
-    
-    // If updating current user
-    if (currentUser && currentUser.id === updatedUser.id) {
-      setCurrentUser(updatedUser);
-      window.sessionStorage.setItem("clinic_session", JSON.stringify(updatedUser));
+  const handleUpdateUser = async (updatedUser: SystemUser) => {
+    const saved = await apiClient.updateUser(updatedUser);
+    setUsers(current => current.map(u => u.id === saved.id ? saved : u));
+
+    if (currentUser && currentUser.id === saved.id) {
+      setCurrentUser(saved);
     }
+  };
+
+  const handleUpdateUserPassword = async (userId: string, password: string) => {
+    const saved = await apiClient.updateUserPassword(userId, password);
+    setUsers(current => current.map(u => u.id === saved.id ? saved : u));
+    showToast(`Senha de ${saved.name} atualizada.`);
+  };
+
+  const handleDeleteUser = async (userId: string) => {
+    await apiClient.deleteUser(userId);
+    setUsers(current => current.filter(user => user.id !== userId));
+    showToast("Usuario excluido.");
+  };
+
+  const handleUpdateMyPassword = async (currentPassword: string, newPassword: string) => {
+    const saved = await apiClient.updateMyPassword(currentPassword, newPassword);
+    setUsers(current => current.map(u => u.id === saved.id ? saved : u));
+    setCurrentUser(saved);
   };
 
   const handleAddProfessional = (newProfData: Omit<Professional, "id">) => {
@@ -289,8 +310,10 @@ export default function App() {
       const pat = patients.find(p => p.id === patientId);
       if (pat) {
         let absencesCount = pat.absencesCount;
-        if (status === "Faltou") {
+        if (status === "Faltou" && targetApp.status !== "Faltou") {
           absencesCount += 1;
+        } else if (status !== "Faltou" && targetApp.status === "Faltou") {
+          absencesCount = Math.max(0, absencesCount - 1);
         }
 
         // Update history entry in patient card
@@ -323,15 +346,19 @@ export default function App() {
   };
 
   // Login/logout logic
-  const handleLogin = (user: SystemUser) => {
-    setCurrentUser(user);
-    window.sessionStorage.setItem("clinic_session", JSON.stringify(user));
+  const handleLogin = async (session: AuthSession) => {
+    apiClient.setAuthToken(session.token);
+    setCurrentUser(session.user);
+    await loadAppData();
     setActiveView("dashboard");
   };
 
   const handleLogout = () => {
+    void apiClient.logout().catch(() => undefined);
+    apiClient.setAuthToken("");
     setCurrentUser(null);
-    window.sessionStorage.removeItem("clinic_session");
+    setBookingContext(undefined);
+    setBookingPreferredProfessionalId("");
   };
 
   // Quick navigation helpers
@@ -340,22 +367,42 @@ export default function App() {
     setActiveView("agenda");
   };
 
-  const openCalBookingArea = () => {
+  const findContactForPatient = (patient: Patient) => {
+    const normalizedPhone = patient.normalizedPhone || normalizePhone(patient.phone);
+    return contacts.find(contact =>
+      contact.patientId === patient.id ||
+      contact.normalizedPhone === normalizedPhone
+    );
+  };
+
+  const openCalBookingArea = (preferredProfessionalId = "") => {
+    setBookingPreferredProfessionalId(preferredProfessionalId);
     setActiveView("agenda");
     window.setTimeout(() => {
       document.getElementById("cal-official-booking")?.scrollIntoView({ behavior: "smooth", block: "start" });
     }, 120);
   };
 
-  // Helper for patient view linkage
-  const [selectedPatientInView, setSelectedPatientInView] = useState<Patient | null>(null);
+  const openCalBookingAreaForPatient = (patientId: string, intent: BookingContext["intent"]) => {
+    const patient = patients.find(item => item.id === patientId);
+    if (!patient) {
+      openCalBookingArea();
+      return;
+    }
 
-  const handleOpenNewAppointmentForPatient = () => {
-    openCalBookingArea();
+    const contact = findContactForPatient(patient);
+    const linkedProfessionalIds = contact?.professionalIds || [];
+    setBookingContext({ patientId, intent });
+    showToast(`${patient.name} vinculado ao ${intent === "return" ? "agendamento de retorno" : "novo agendamento"}.`);
+    openCalBookingArea(linkedProfessionalIds.length === 1 ? linkedProfessionalIds[0] : "");
   };
 
-  const handleOpenReturnForPatient = () => {
-    openCalBookingArea();
+  const handleOpenNewAppointmentForPatient = (patientId: string) => {
+    openCalBookingAreaForPatient(patientId, "new");
+  };
+
+  const handleOpenReturnForPatient = (patientId: string) => {
+    openCalBookingAreaForPatient(patientId, "return");
   };
 
   const handleAddContact = (newContactData: Omit<Contact, "id" | "normalizedPhone" | "createdAt" | "updatedAt">) => {
@@ -377,6 +424,19 @@ export default function App() {
         : contact
     );
     saveContacts(updated);
+  };
+
+  const handleCreateClinicalReminder = async (
+    reminder: Omit<ClinicalReminder, "id" | "status" | "createdBy" | "createdAt" | "updatedAt" | "completedAt">
+  ) => {
+    const created = await apiClient.createClinicalReminder(reminder);
+    setClinicalReminders(current => [created, ...current]);
+    showToast("Lembrete clinico criado.");
+  };
+
+  const handleUpdateClinicalReminder = async (reminder: ClinicalReminder) => {
+    const saved = await apiClient.updateClinicalReminder(reminder);
+    setClinicalReminders(current => current.map(item => item.id === saved.id ? saved : item));
   };
 
   const handleCreatePatientFromContact = (contact: Contact) => {
@@ -460,9 +520,7 @@ export default function App() {
   if (!currentUser) {
     return (
       <LoginScreen 
-        users={users.length > 0 ? users : INITIAL_USERS} 
-        onLoginSuccess={handleLogin} 
-        onUpdateUser={handleUpdateUser} 
+        onLoginSuccess={handleLogin}
       />
     );
   }
@@ -484,6 +542,11 @@ export default function App() {
     ] : []),
     { id: "perfil", label: "Minha Conta", icon: User }
   ];
+
+  const bookingPatient = bookingContext
+    ? patients.find(patient => patient.id === bookingContext.patientId)
+    : undefined;
+  const bookingContact = bookingPatient ? findContactForPatient(bookingPatient) : undefined;
 
   return (
     <div className="min-h-screen bg-[#F5F5F0] text-[#1A1A1A] font-sans antialiased flex flex-col">
@@ -561,6 +624,41 @@ export default function App() {
 
       </header>
 
+      {bookingContext && bookingPatient && (
+        <div className="z-30 bg-[#FFF8EE] border-b border-[#E8C7A8] px-6 md:px-10 py-3 flex flex-col md:flex-row md:items-center justify-between gap-3 text-xs">
+          <div className="flex items-start md:items-center gap-2 text-[#6B4B2D]">
+            <Bell className="w-4 h-4 text-[#C17A63] shrink-0 mt-0.5 md:mt-0" />
+            <div>
+              <p className="font-bold">
+                Paciente vinculado ao Cal.com: {bookingPatient.name}
+              </p>
+              <p className="text-[11px]">
+                {bookingContext.intent === "return" ? "Agendar retorno" : "Novo agendamento"} - {bookingPatient.phone}
+              </p>
+            </div>
+          </div>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              onClick={() => openCalBookingArea(bookingPreferredProfessionalId)}
+              className="px-3 py-2 bg-[#5A5A40] text-white rounded-xl font-bold"
+            >
+              Ir para Agenda
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setBookingContext(undefined);
+                setBookingPreferredProfessionalId("");
+              }}
+              className="px-3 py-2 bg-white border border-[#D8D8C0] text-[#5A5A40] rounded-xl font-bold"
+            >
+              Limpar vinculo
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Main Workspace layout */}
       <div className="flex flex-1 relative">
         
@@ -612,8 +710,12 @@ export default function App() {
               patients={patients}
               professionals={professionals}
               settings={settings}
+              clinicalReminders={clinicalReminders}
               onNavigate={setActiveView}
-              onOpenNewAppointment={openCalBookingArea}
+              onOpenNewAppointment={() => {
+                setBookingContext(undefined);
+                openCalBookingArea();
+              }}
               onOpenNewPatient={() => {
                 setActiveView("pacientes");
                 setTimeout(() => {
@@ -622,6 +724,8 @@ export default function App() {
                 }, 100);
               }}
               onSelectAppointment={handleSelectAppointmentFromDashboard}
+              onCreateClinicalReminder={handleCreateClinicalReminder}
+              onUpdateClinicalReminder={handleUpdateClinicalReminder}
             />
           )}
 
@@ -643,6 +747,14 @@ export default function App() {
                   if (btn) btn.click();
                 }, 100);
               }}
+              bookingContext={bookingContext}
+              bookingPatient={bookingPatient}
+              bookingContact={bookingContact}
+              preferredProfessionalId={bookingPreferredProfessionalId}
+              onClearBookingContext={() => {
+                setBookingContext(undefined);
+                setBookingPreferredProfessionalId("");
+              }}
               selectedAppointmentFromDashboard={dashboardSelectedApp}
               clearSelectedAppointmentFromDashboard={() => setDashboardSelectedApp(null)}
             />
@@ -658,6 +770,7 @@ export default function App() {
               onOpenNewAppointmentForPatient={handleOpenNewAppointmentForPatient}
               onOpenReturnForPatient={handleOpenReturnForPatient}
               onDeletePatient={handleDeletePatient}
+              onCreateClinicalReminder={handleCreateClinicalReminder}
             />
           )}
 
@@ -665,6 +778,7 @@ export default function App() {
             <ContactsView
               contacts={contacts}
               patients={patients}
+              professionals={professionals}
               onAddContact={handleAddContact}
               onUpdateContact={handleUpdateContact}
               onCreatePatientFromContact={handleCreatePatientFromContact}
@@ -707,6 +821,8 @@ export default function App() {
               users={users}
               onAddUser={handleAddUser}
               onUpdateUser={handleUpdateUser}
+              onUpdateUserPassword={handleUpdateUserPassword}
+              onDeleteUser={handleDeleteUser}
             />
           )}
 
@@ -721,13 +837,19 @@ export default function App() {
           {activeView === "perfil" && (
             <ProfileView 
               currentUser={currentUser}
-              onUpdateUser={handleUpdateUser}
+              onUpdateMyPassword={handleUpdateMyPassword}
             />
           )}
 
         </main>
 
       </div>
+
+      {toastMessage && (
+        <div className="fixed right-5 bottom-5 z-50 bg-[#1A1A1A] text-white px-5 py-3 rounded-2xl shadow-xl text-xs font-bold border border-white/10">
+          {toastMessage}
+        </div>
+      )}
 
     </div>
   );

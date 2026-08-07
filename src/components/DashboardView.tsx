@@ -1,5 +1,5 @@
 import React, { useState, useMemo } from "react";
-import { Appointment, Patient, Professional, SystemUser, ClinicSettings } from "../types";
+import { Appointment, Patient, Professional, SystemUser, ClinicSettings, ClinicalReminder } from "../types";
 import { 
   Calendar, 
   Users, 
@@ -23,10 +23,13 @@ interface DashboardViewProps {
   patients: Patient[];
   professionals: Professional[];
   settings: ClinicSettings;
+  clinicalReminders: ClinicalReminder[];
   onNavigate: (viewId: string) => void;
   onOpenNewAppointment: () => void;
   onOpenNewPatient: () => void;
   onSelectAppointment: (app: Appointment) => void;
+  onCreateClinicalReminder: (reminder: Omit<ClinicalReminder, "id" | "status" | "createdBy" | "createdAt" | "updatedAt" | "completedAt">) => Promise<void>;
+  onUpdateClinicalReminder: (reminder: ClinicalReminder) => Promise<void>;
 }
 
 export const DashboardView: React.FC<DashboardViewProps> = ({
@@ -35,10 +38,13 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   patients,
   professionals,
   settings,
+  clinicalReminders,
   onNavigate,
   onOpenNewAppointment,
   onOpenNewPatient,
-  onSelectAppointment
+  onSelectAppointment,
+  onCreateClinicalReminder,
+  onUpdateClinicalReminder
 }) => {
   const todayStr = new Intl.DateTimeFormat("en-CA", {
     timeZone: settings.timezone || "America/Sao_Paulo",
@@ -49,6 +55,14 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
 
   // State for active professional filter on dashboard
   const [selectedProfId, setSelectedProfId] = useState<string>("todas");
+  const [showReminderModal, setShowReminderModal] = useState(false);
+  const [reminderTitle, setReminderTitle] = useState("");
+  const [reminderDescription, setReminderDescription] = useState("");
+  const [reminderPriority, setReminderPriority] = useState<ClinicalReminder["priority"]>("Media");
+  const [reminderDueDate, setReminderDueDate] = useState("");
+  const [reminderDueTime, setReminderDueTime] = useState("");
+  const [reminderPatientId, setReminderPatientId] = useState("");
+  const [reminderProfessionalId, setReminderProfessionalId] = useState("");
 
   // Get matching doctor for logged-in user if they are doctor
   const defaultProfId = useMemo(() => {
@@ -110,6 +124,53 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
       .slice(0, 3);
   }, [appointments, activeFilterId, todayStr]);
 
+  const activeClinicalReminders = useMemo(() => {
+    return clinicalReminders
+      .filter(reminder => reminder.status === "Aberto")
+      .filter(reminder => activeFilterId === "todas" || !reminder.professionalId || reminder.professionalId === activeFilterId)
+      .sort((a, b) => `${a.dueDate || "9999-99-99"} ${a.dueTime || "99:99"}`.localeCompare(`${b.dueDate || "9999-99-99"} ${b.dueTime || "99:99"}`))
+      .slice(0, 6);
+  }, [activeFilterId, clinicalReminders]);
+
+  const resetReminderForm = () => {
+    setReminderTitle("");
+    setReminderDescription("");
+    setReminderPriority("Media");
+    setReminderDueDate("");
+    setReminderDueTime("");
+    setReminderPatientId("");
+    setReminderProfessionalId(activeFilterId === "todas" ? "" : activeFilterId);
+  };
+
+  const handleCreateReminder = async (event: React.FormEvent) => {
+    event.preventDefault();
+    await onCreateClinicalReminder({
+      title: reminderTitle,
+      description: reminderDescription,
+      priority: reminderPriority,
+      dueDate: reminderDueDate || undefined,
+      dueTime: reminderDueTime || undefined,
+      patientId: reminderPatientId || undefined,
+      professionalId: reminderProfessionalId || undefined
+    });
+    resetReminderForm();
+    setShowReminderModal(false);
+  };
+
+  const handleEditReminder = async (reminder: ClinicalReminder) => {
+    const title = window.prompt("Titulo do lembrete", reminder.title);
+    if (!title) return;
+    const description = window.prompt("Descricao do lembrete", reminder.description) || "";
+    await onUpdateClinicalReminder({
+      ...reminder,
+      title,
+      description
+    });
+  };
+
+  const patientName = (patientId?: string) => patients.find(patient => patient.id === patientId)?.name;
+  const professionalName = (professionalId?: string) => professionals.find(professional => professional.id === professionalId)?.name;
+
   // Summary per professional for the clinical overview panel
   const professionalSummaries = useMemo(() => {
     const visibleProfessionals = activeFilterId === "todas"
@@ -151,7 +212,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             {getGreeting()}, <span className="italic text-[#5A5A40] font-semibold">{currentUser.name}</span>
           </h2>
           <p className="text-xs text-[#707060]">
-            Seu consultório está operando com {activeProfessionalOptions.length} dentistas ativas e agenda oficial via Cal.com.
+            Seu consultório está operando com {activeProfessionalOptions.length} dentistas ativas! 🎉
           </p>
         </div>
         
@@ -404,6 +465,79 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
             </div>
           )}
 
+          <div className="bg-[#F2F2E9] p-6 rounded-[32px] border border-[#E5E5E0]/60 space-y-5 flex-1">
+            <div className="flex items-center justify-between gap-3">
+              <h4 className="font-serif text-lg text-[#5A5A40] flex items-center gap-2">
+                <HeartHandshake className="w-5 h-5 text-[#C17A63]" />
+                Lembretes Clinicos
+              </h4>
+              <button
+                type="button"
+                onClick={() => {
+                  resetReminderForm();
+                  setShowReminderModal(true);
+                }}
+                className="inline-flex items-center gap-1.5 px-3 py-2 bg-white text-[#5A5A40] border border-[#D8D8C0] rounded-xl text-[10px] font-bold hover:bg-[#F5F5F0]"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                Novo
+              </button>
+            </div>
+
+            {activeClinicalReminders.length === 0 ? (
+              <p className="text-xs text-[#707060] italic leading-relaxed">
+                Nenhum lembrete clinico aberto para este filtro.
+              </p>
+            ) : (
+              <ul className="space-y-3">
+                {activeClinicalReminders.map(reminder => (
+                  <li key={reminder.id} className="bg-white/80 border border-[#E5E5E0] rounded-2xl p-3 text-xs space-y-2">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <p className="font-bold text-[#1A1A1A]">{reminder.title}</p>
+                        {reminder.description && <p className="text-[#707060] mt-1 leading-relaxed">{reminder.description}</p>}
+                      </div>
+                      <span className={`shrink-0 px-2 py-0.5 rounded-full text-[9px] font-bold uppercase ${
+                        reminder.priority === "Alta" ? "bg-red-50 text-red-700" : reminder.priority === "Baixa" ? "bg-green-50 text-green-700" : "bg-amber-50 text-amber-800"
+                      }`}>
+                        {reminder.priority}
+                      </span>
+                    </div>
+                    <div className="flex flex-wrap gap-2 text-[10px] text-[#707060]">
+                      {reminder.dueDate && <span>{reminder.dueDate.split("-").reverse().join("/")}{reminder.dueTime ? ` as ${reminder.dueTime}` : ""}</span>}
+                      {patientName(reminder.patientId) && <span>Paciente: {patientName(reminder.patientId)}</span>}
+                      {professionalName(reminder.professionalId) && <span>Dentista: {professionalName(reminder.professionalId)}</span>}
+                    </div>
+                    <div className="flex gap-2">
+                      <button
+                        type="button"
+                        onClick={() => void handleEditReminder(reminder)}
+                        className="px-3 py-1.5 bg-white border border-[#D8D8C0] text-[#5A5A40] rounded-lg text-[10px] font-bold"
+                      >
+                        Editar
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void onUpdateClinicalReminder({ ...reminder, status: "Concluido" })}
+                        className="px-3 py-1.5 bg-[#5A5A40] text-white rounded-lg text-[10px] font-bold"
+                      >
+                        Concluir
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void onUpdateClinicalReminder({ ...reminder, status: "Arquivado" })}
+                        className="px-3 py-1.5 bg-white border border-[#D8D8C0] text-[#5A5A40] rounded-lg text-[10px] font-bold"
+                      >
+                        Arquivar
+                      </button>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+
+          {false && (
           <div className="bg-[#F2F2E9] p-8 rounded-[32px] border border-[#E5E5E0]/60 space-y-5 flex-1">
             <h4 className="font-serif text-lg text-[#5A5A40] flex items-center gap-2">
               <HeartHandshake className="w-5 h-5 text-[#C17A63]" />
@@ -424,6 +558,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
               </li>
             </ul>
           </div>
+          )}
 
           <div className="bg-white p-6 rounded-[32px] border border-[#E5E5E0] space-y-2 shadow-sm">
             <p className="text-[10px] font-bold uppercase text-[#C17A63] tracking-widest">Informativo</p>
@@ -434,6 +569,41 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
         </div>
 
       </div>
+      {showReminderModal && (
+        <div className="fixed inset-0 bg-black/40 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-[32px] border border-[#E5E5E0] shadow-2xl w-full max-w-lg p-8 space-y-6 animate-scale-up">
+            <div className="flex justify-between items-center border-b border-[#F5F5F0] pb-4">
+              <h3 className="font-serif text-2xl text-[#5A5A40] italic font-semibold">Novo Lembrete Clinico</h3>
+              <button onClick={() => setShowReminderModal(false)} className="text-xs text-[#A0A090] hover:text-[#5A5A40] font-bold">Fechar</button>
+            </div>
+            <form onSubmit={handleCreateReminder} className="space-y-4">
+              <input value={reminderTitle} onChange={(e) => setReminderTitle(e.target.value)} placeholder="Titulo do lembrete" className="w-full bg-[#F5F5F0] border border-[#E5E5E0] rounded-2xl px-4 py-3 text-sm" required />
+              <textarea value={reminderDescription} onChange={(e) => setReminderDescription(e.target.value)} placeholder="Descricao ou orientacao" rows={3} className="w-full bg-[#F5F5F0] border border-[#E5E5E0] rounded-2xl px-4 py-3 text-sm" />
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <select value={reminderPriority} onChange={(e) => setReminderPriority(e.target.value as ClinicalReminder["priority"])} className="bg-[#F5F5F0] border border-[#E5E5E0] rounded-2xl px-4 py-3 text-sm">
+                  <option value="Baixa">Baixa</option>
+                  <option value="Media">Media</option>
+                  <option value="Alta">Alta</option>
+                </select>
+                <input type="date" value={reminderDueDate} onChange={(e) => setReminderDueDate(e.target.value)} className="bg-[#F5F5F0] border border-[#E5E5E0] rounded-2xl px-4 py-3 text-sm" />
+                <input type="time" value={reminderDueTime} onChange={(e) => setReminderDueTime(e.target.value)} className="bg-[#F5F5F0] border border-[#E5E5E0] rounded-2xl px-4 py-3 text-sm" />
+              </div>
+              <select value={reminderPatientId} onChange={(e) => setReminderPatientId(e.target.value)} className="w-full bg-[#F5F5F0] border border-[#E5E5E0] rounded-2xl px-4 py-3 text-sm">
+                <option value="">Sem paciente vinculado</option>
+                {patients.map(patient => <option key={patient.id} value={patient.id}>{patient.name}</option>)}
+              </select>
+              <select value={reminderProfessionalId} onChange={(e) => setReminderProfessionalId(e.target.value)} className="w-full bg-[#F5F5F0] border border-[#E5E5E0] rounded-2xl px-4 py-3 text-sm">
+                <option value="">Todas as dentistas</option>
+                {activeProfessionalOptions.map(professional => <option key={professional.id} value={professional.id}>{professional.name}</option>)}
+              </select>
+              <div className="flex justify-end gap-3 pt-3">
+                <button type="button" onClick={() => setShowReminderModal(false)} className="px-5 py-3 border border-[#D8D8C0] text-[#5A5A40] rounded-2xl text-xs font-bold">Cancelar</button>
+                <button type="submit" className="px-6 py-3 bg-[#5A5A40] text-white rounded-2xl text-xs font-bold">Salvar</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

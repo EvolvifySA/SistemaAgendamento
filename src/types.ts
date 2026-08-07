@@ -9,6 +9,11 @@ export interface SystemUser {
   needsPasswordChange?: boolean;
 }
 
+export interface AuthSession {
+  user: SystemUser;
+  token: string;
+}
+
 export type AppointmentStatus = "Livre" | "Agendado" | "Confirmado" | "Atendido" | "Cancelado" | "Faltou";
 
 export interface Professional {
@@ -95,11 +100,36 @@ export interface Contact {
   email?: string;
   whatsappOptIn: boolean;
   patientId?: string;
+  professionalIds?: string[];
   tags: string[];
   notes: string;
   source: "manual" | "cal.com" | "whatsapp" | "import";
   createdAt: string;
   updatedAt: string;
+}
+
+export interface BookingContext {
+  patientId: string;
+  intent: "new" | "return";
+}
+
+export type ClinicalReminderPriority = "Baixa" | "Media" | "Alta";
+export type ClinicalReminderStatus = "Aberto" | "Concluido" | "Arquivado";
+
+export interface ClinicalReminder {
+  id: string;
+  title: string;
+  description: string;
+  priority: ClinicalReminderPriority;
+  status: ClinicalReminderStatus;
+  dueDate?: string;
+  dueTime?: string;
+  patientId?: string;
+  professionalId?: string;
+  createdBy: string;
+  createdAt: string;
+  updatedAt: string;
+  completedAt?: string;
 }
 
 export interface TimeOffEntry {
@@ -137,6 +167,7 @@ export interface AppBootstrapData {
   users: SystemUser[];
   professionals: Professional[];
   contacts: Contact[];
+  clinicalReminders: ClinicalReminder[];
   timeOff: TimeOffEntry[];
   settings: ClinicSettings;
   mode: "production" | "demo";

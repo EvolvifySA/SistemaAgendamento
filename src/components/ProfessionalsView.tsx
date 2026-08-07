@@ -221,7 +221,7 @@ export function ProfessionalsView({
             Profissionais & Especialistas
           </h1>
           <p className="text-xs text-[#707060] mt-1">
-            Configure dados cadastrais, status no painel e integração Cal.com de cada dentista.
+            Configure dados cadastrais, status de ativo/folga e integração de calendario de cada dentista.
           </p>
         </div>
 

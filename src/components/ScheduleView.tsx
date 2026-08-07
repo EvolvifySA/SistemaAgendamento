@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from "react";
-import { Appointment, AppointmentStatus, ClinicSettings, Patient, Professional, SystemUser } from "../types";
+import { Appointment, AppointmentStatus, BookingContext, ClinicSettings, Contact, Patient, Professional, SystemUser } from "../types";
 import { CalInlineEmbed } from "./CalInlineEmbed";
-import { BookOpenCheck, CalendarDays, CheckCircle2, ExternalLink, UserRoundCheck } from "lucide-react";
+import { BookOpenCheck, CalendarDays, CheckCircle2, ExternalLink, UserRoundCheck, X } from "lucide-react";
 
 interface ScheduleViewProps {
   appointments: Appointment[];
@@ -14,6 +14,11 @@ interface ScheduleViewProps {
   onUpdateAppointmentStatus: (id: string, status: AppointmentStatus, notes?: string) => void;
   onUpdateAppointment?: (updated: Appointment) => void;
   onOpenNewPatient: () => void;
+  bookingContext?: BookingContext;
+  bookingPatient?: Patient;
+  bookingContact?: Contact;
+  preferredProfessionalId?: string;
+  onClearBookingContext: () => void;
   selectedAppointmentFromDashboard: Appointment | null;
   clearSelectedAppointmentFromDashboard: () => void;
 }
@@ -37,6 +42,11 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
   onUpdateAppointmentStatus,
   onUpdateAppointment,
   onOpenNewPatient,
+  bookingContext,
+  bookingPatient,
+  bookingContact,
+  preferredProfessionalId,
+  onClearBookingContext,
   selectedAppointmentFromDashboard,
   clearSelectedAppointmentFromDashboard
 }) => {
@@ -76,6 +86,12 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
     setSelectedProfessionalId(selectedAppointmentFromDashboard.professionalId);
     clearSelectedAppointmentFromDashboard();
   }, [selectedAppointmentFromDashboard, clearSelectedAppointmentFromDashboard]);
+
+  useEffect(() => {
+    if (!preferredProfessionalId) return;
+    if (!visibleProfessionals.some((professional) => professional.id === preferredProfessionalId)) return;
+    setSelectedProfessionalId(preferredProfessionalId);
+  }, [preferredProfessionalId, visibleProfessionals]);
 
   const mountedProfessionals = useMemo(() => {
     return visibleProfessionals.filter((professional) =>
@@ -135,6 +151,34 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
           </div>
         </div>
 
+        {bookingContext && bookingPatient && (
+          <div className="bg-white border border-[#E5E5E0] rounded-2xl p-4 shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-3">
+            <div>
+              <p className="text-[10px] uppercase tracking-wider font-extrabold text-[#C17A63]">
+                {bookingContext.intent === "return" ? "Agendar retorno vinculado" : "Novo agendamento vinculado"}
+              </p>
+              <p className="text-sm font-bold text-[#1A1A1A] mt-1">{bookingPatient.name}</p>
+              <p className="text-xs text-[#707060] mt-0.5">
+                {bookingPatient.phone}
+                {bookingPatient.email ? ` - ${bookingPatient.email}` : ""}
+              </p>
+              {(!bookingContact || (bookingContact.professionalIds || []).length !== 1) && (
+                <p className="text-[11px] text-amber-700 font-semibold mt-2">
+                  Escolha abaixo a agenda da dentista para este atendimento.
+                </p>
+              )}
+            </div>
+            <button
+              type="button"
+              onClick={onClearBookingContext}
+              className="inline-flex items-center justify-center gap-1.5 px-3 py-2 bg-[#F5F5F0] text-[#5A5A40] border border-[#D8D8C0] rounded-xl text-xs font-bold hover:bg-white transition-all"
+            >
+              <X className="w-3.5 h-3.5" />
+              Limpar vinculo
+            </button>
+          </div>
+        )}
+
         <div className="bg-[#F5F5F0] border border-[#E5E5E0] rounded-2xl p-1 flex flex-wrap gap-1 w-fit">
           {visibleProfessionals.map((professional) => {
             const active = selectedProfessional?.id === professional.id;
@@ -164,7 +208,12 @@ export const ScheduleView: React.FC<ScheduleViewProps> = ({
                 key={professional.id}
                 className={selectedProfessional?.id === professional.id ? "block" : "hidden"}
               >
-                <CalInlineEmbed professional={professional} />
+                <CalInlineEmbed
+                  professional={professional}
+                  bookingContext={bookingContext}
+                  bookingPatient={bookingPatient}
+                  bookingContact={bookingContact}
+                />
               </div>
             ))}
           </div>

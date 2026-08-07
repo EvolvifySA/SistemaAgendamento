@@ -1,10 +1,14 @@
 import React, { useEffect, useMemo, useState } from "react";
 import Cal, { getCalApi } from "@calcom/embed-react";
 import { CalendarDays, ExternalLink, RefreshCw } from "lucide-react";
-import { Professional } from "../types";
+import { BookingContext, Contact, Patient, Professional } from "../types";
+import { normalizePhone } from "../utils/phone";
 
 interface CalInlineEmbedProps {
   professional?: Professional;
+  bookingContext?: BookingContext;
+  bookingPatient?: Patient;
+  bookingContact?: Contact;
 }
 
 function normalizeCalLink(value?: string): string {
@@ -16,16 +20,53 @@ function normalizeCalLink(value?: string): string {
     .replace(/\/$/, "");
 }
 
-function getNamespace(professional?: Professional, reloadToken = 0) {
-  const stableId = professional?.calEventTypeId || professional?.id || "empty";
-  return `dentist-${stableId}-${reloadToken}`.replace(/[^a-zA-Z0-9_-]/g, "-");
+function getPhoneForCal(patient?: Patient): string {
+  if (!patient?.phone) return "";
+  const trimmed = patient.phone.trim();
+  if (trimmed.startsWith("+")) return trimmed;
+
+  const normalized = patient.normalizedPhone || normalizePhone(patient.phone);
+  if (normalized.startsWith("55")) return `+${normalized}`;
+  if (normalized.length === 10 || normalized.length === 11) return `+55${normalized}`;
+  return normalized ? `+${normalized}` : "";
 }
 
-export const CalInlineEmbed: React.FC<CalInlineEmbedProps> = ({ professional }) => {
+function getNamespace(professional?: Professional, reloadToken = 0, bookingContext?: BookingContext) {
+  const stableId = professional?.calEventTypeId || professional?.id || "empty";
+  const bookingId = bookingContext ? `${bookingContext.patientId}-${bookingContext.intent}` : "no-patient";
+  return `dentist-${stableId}-${bookingId}-${reloadToken}`.replace(/[^a-zA-Z0-9_-]/g, "-");
+}
+
+export const CalInlineEmbed: React.FC<CalInlineEmbedProps> = ({
+  professional,
+  bookingContext,
+  bookingPatient,
+  bookingContact
+}) => {
   const [reloadToken, setReloadToken] = useState(0);
   const [status, setStatus] = useState<"empty" | "loading" | "ready" | "slow">("loading");
   const calLink = normalizeCalLink(professional?.calUsername);
-  const namespace = useMemo(() => getNamespace(professional, reloadToken), [professional, reloadToken]);
+  const namespace = useMemo(() => getNamespace(professional, reloadToken, bookingContext), [professional, reloadToken, bookingContext]);
+  const bookingPhone = getPhoneForCal(bookingPatient);
+  const bookingEmail = bookingPatient?.email || bookingContact?.email || "";
+  const prefillConfig = {
+    layout: "month_view",
+    useSlotsViewOnSmallScreen: "true",
+    ...(bookingPatient ? { name: bookingPatient.name } : {}),
+    ...(bookingEmail ? { email: bookingEmail } : {}),
+    ...(bookingPhone ? {
+      location: JSON.stringify({
+        value: "phone",
+        optionValue: bookingPhone
+      })
+    } : {}),
+    ...(bookingContext ? {
+      "metadata[clinicPatientId]": bookingContext.patientId,
+      "metadata[clinicNormalizedPhone]": bookingPatient ? (bookingPatient.normalizedPhone || normalizePhone(bookingPatient.phone)) : "",
+      "metadata[clinicBookingIntent]": bookingContext.intent,
+      "metadata[clinicProfessionalId]": professional?.id || ""
+    } : {})
+  };
 
   useEffect(() => {
     if (!professional || !calLink) {
@@ -134,8 +175,7 @@ export const CalInlineEmbed: React.FC<CalInlineEmbedProps> = ({ professional }) 
           calLink={calLink}
           style={{ width: "100%", height: "680px", overflow: "scroll" }}
           config={{
-            layout: "month_view",
-            useSlotsViewOnSmallScreen: "true"
+            ...prefillConfig
           }}
         />
       </div>

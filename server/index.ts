@@ -1,5 +1,6 @@
 import "dotenv/config";
 import express from "express";
+import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -17,7 +18,9 @@ import {
   AppBootstrapData,
   Appointment,
   AppointmentStatus,
+  AuthSession,
   ClinicSettings,
+  ClinicalReminder,
   Contact,
   Patient,
   Professional,
@@ -33,6 +36,9 @@ const port = Number(process.env.PORT || 3001);
 const calApiVersion = process.env.CAL_API_VERSION || "2024-06-14";
 const databaseUrl = process.env.DATABASE_URL;
 const isPostgresConfigured = Boolean(databaseUrl);
+const authSecret = process.env.AUTH_SECRET || "dev-clinic-auth-secret";
+const defaultInitialPassword = process.env.DEFAULT_INITIAL_PASSWORD || "123456";
+const sessionTtlMs = 1000 * 60 * 60 * 12;
 
 const pool = isPostgresConfigured
   ? new Pool({
@@ -49,9 +55,79 @@ const demoState = {
   users: INITIAL_USERS,
   professionals: INITIAL_PROFESSIONALS.map(withProfessionalDefaults),
   contacts: INITIAL_CONTACTS,
+  clinicalReminders: [] as ClinicalReminder[],
   timeOff: INITIAL_TIME_OFF,
   settings: INITIAL_SETTINGS
 };
+
+type ContactWithProfessionalIds = Contact & { professionalIds?: string[] };
+type StoredUser = SystemUser & { passwordHash?: string; passwordUpdatedAt?: string };
+type AuthenticatedRequest = express.Request & { currentUser?: SystemUser };
+
+function uniqueProfessionalIds(ids?: string[]): string[] {
+  return [...new Set((ids || []).filter(Boolean))];
+}
+
+function contactRow(contact: ContactWithProfessionalIds): Record<string, unknown> {
+  const { professionalIds: _professionalIds, ...row } = contact;
+  return row as Record<string, unknown>;
+}
+
+function publicUser(user: StoredUser): SystemUser {
+  const { passwordHash: _passwordHash, passwordUpdatedAt: _passwordUpdatedAt, ...safeUser } = user;
+  return safeUser;
+}
+
+function publicUsers(users: StoredUser[]): SystemUser[] {
+  return users.map(publicUser);
+}
+
+function hashPassword(password: string): string {
+  const salt = crypto.randomBytes(16).toString("hex");
+  const hash = crypto.scryptSync(password, salt, 64).toString("hex");
+  return `scrypt$${salt}$${hash}`;
+}
+
+function verifyPassword(password: string, storedHash?: string): boolean {
+  if (!storedHash) return password === defaultInitialPassword;
+  const [algorithm, salt, hash] = storedHash.split("$");
+  if (algorithm !== "scrypt" || !salt || !hash) return false;
+  const expected = Buffer.from(hash, "hex");
+  const actual = crypto.scryptSync(password, salt, expected.length);
+  return expected.length === actual.length && crypto.timingSafeEqual(expected, actual);
+}
+
+function signToken(payload: Record<string, unknown>): string {
+  const body = Buffer.from(JSON.stringify(payload)).toString("base64url");
+  const signature = crypto.createHmac("sha256", authSecret).update(body).digest("base64url");
+  return `${body}.${signature}`;
+}
+
+function verifyToken(token?: string): { userId: string; exp: number } | null {
+  if (!token || !token.includes(".")) return null;
+  const [body, signature] = token.split(".");
+  const expected = crypto.createHmac("sha256", authSecret).update(body).digest("base64url");
+  const signatureBuffer = Buffer.from(signature);
+  const expectedBuffer = Buffer.from(expected);
+  if (signatureBuffer.length !== expectedBuffer.length || !crypto.timingSafeEqual(signatureBuffer, expectedBuffer)) {
+    return null;
+  }
+
+  try {
+    const payload = JSON.parse(Buffer.from(body, "base64url").toString("utf8")) as { userId?: string; exp?: number };
+    if (!payload.userId || !payload.exp || payload.exp < Date.now()) return null;
+    return { userId: payload.userId, exp: payload.exp };
+  } catch {
+    return null;
+  }
+}
+
+function createSession(user: StoredUser): AuthSession {
+  return {
+    user: publicUser(user),
+    token: signToken({ userId: user.id, exp: Date.now() + sessionTtlMs })
+  };
+}
 
 function todayISO() {
   return new Date().toISOString().slice(0, 10);
@@ -181,18 +257,108 @@ async function upsertRow(client: pg.PoolClient | pg.Pool, table: string, row: Re
   );
 }
 
+async function readContactProfessionalIds(): Promise<Map<string, string[]>> {
+  const map = new Map<string, string[]>();
+  if (!pool) return map;
+
+  const result = await pool.query(
+    'select "contactId", array_agg("professionalId" order by "professionalId") as "professionalIds" from contact_professionals group by "contactId"'
+  );
+  for (const row of result.rows as { contactId: string; professionalIds: string[] }[]) {
+    map.set(row.contactId, row.professionalIds || []);
+  }
+  return map;
+}
+
+async function syncContactProfessionalIds(
+  client: pg.PoolClient | pg.Pool,
+  contactId: string,
+  professionalIds?: string[],
+  source = "manual"
+) {
+  const ids = uniqueProfessionalIds(professionalIds);
+  if (ids.length > 0) {
+    await client.query(
+      'delete from contact_professionals where "contactId" = $1 and not ("professionalId" = any($2::text[]))',
+      [contactId, ids]
+    );
+  } else {
+    await client.query('delete from contact_professionals where "contactId" = $1', [contactId]);
+  }
+
+  for (const professionalId of ids) {
+    await client.query(
+      `insert into contact_professionals ("contactId", "professionalId", source, "createdAt", "updatedAt")
+       values ($1, $2, $3, now()::text, now()::text)
+       on conflict ("contactId", "professionalId") do update
+       set "updatedAt" = excluded."updatedAt"`,
+      [contactId, professionalId, source]
+    );
+  }
+}
+
+async function replaceContacts(rows: ContactWithProfessionalIds[]): Promise<Contact[]> {
+  const normalized = rows.map((contact) => ({
+    ...contact,
+    normalizedPhone: normalizePhone(contact.phone),
+    professionalIds: uniqueProfessionalIds(contact.professionalIds),
+    updatedAt: contact.updatedAt || new Date().toISOString()
+  }));
+
+  if (!pool) return normalized;
+
+  const client = await pool.connect();
+  try {
+    await client.query("begin");
+    for (const row of normalized) {
+      await upsertRow(client, "contacts", contactRow(row));
+      await syncContactProfessionalIds(client, row.id, row.professionalIds);
+    }
+
+    const ids = normalized.map((row) => row.id);
+    if (ids.length > 0) {
+      await client.query("delete from contacts where not (id = any($1::text[]))", [ids]);
+    } else {
+      await client.query("delete from contacts");
+    }
+
+    await client.query("commit");
+    return normalized;
+  } catch (error) {
+    await client.query("rollback");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 async function audit(action: string, payload: Record<string, unknown>) {
   if (!pool) return;
   await pool.query("insert into audit_log (action, payload) values ($1, $2)", [action, payload]);
 }
 
+async function readUsers(): Promise<StoredUser[]> {
+  return readTable<StoredUser>("users", demoState.users as StoredUser[]);
+}
+
+async function saveStoredUser(user: StoredUser): Promise<StoredUser> {
+  demoState.users = (demoState.users as StoredUser[]).map((item) => item.id === user.id ? user : item);
+  if (!demoState.users.some((item) => item.id === user.id)) {
+    demoState.users.push(user);
+  }
+  if (pool) await upsertRow(pool, "users", user as unknown as Record<string, unknown>);
+  return user;
+}
+
 async function bootstrap(): Promise<AppBootstrapData> {
-  const [patients, appointments, users, professionals, contacts, timeOff, settingsRows] = await Promise.all([
+  const [patients, appointments, users, professionals, contacts, contactProfessionalIds, clinicalReminders, timeOff, settingsRows] = await Promise.all([
     readTable<Patient>("patients", demoState.patients),
     readTable<Appointment>("appointments_cache", demoState.appointments),
-    readTable<SystemUser>("users", demoState.users),
+    readUsers(),
     readTable<Professional>("professionals", demoState.professionals),
     readTable<Contact>("contacts", demoState.contacts),
+    readContactProfessionalIds(),
+    readTable<ClinicalReminder>("clinical_reminders", demoState.clinicalReminders),
     readTable<TimeOffEntry>("time_off", demoState.timeOff),
     readTable<ClinicSettings & { id?: string }>("clinic_settings", [{ id: "default", ...demoState.settings }])
   ]);
@@ -204,21 +370,83 @@ async function bootstrap(): Promise<AppBootstrapData> {
     return {
       ...contact,
       normalizedPhone,
-      patientId: contact.patientId || matchedPatient?.id
+      patientId: contact.patientId || matchedPatient?.id,
+      professionalIds: contact.professionalIds || contactProfessionalIds.get(contact.id) || []
     };
   });
 
   return {
     patients: normalizedPatients,
     appointments,
-    users,
+    users: publicUsers(users),
     professionals: professionals.map(withProfessionalDefaults),
     contacts: linkedContacts,
+    clinicalReminders,
     timeOff,
     settings: settingsRows[0] || demoState.settings,
     mode: isPostgresConfigured ? "production" : "demo"
   };
 }
+
+app.post("/api/auth/login", async (req, res) => {
+  try {
+    const { email, password } = req.body as { email?: string; password?: string };
+    if (!email || !password) return res.status(400).send("Informe e-mail e senha.");
+
+    const users = await readUsers();
+    const user = users.find((item) => item.email.toLowerCase() === email.toLowerCase());
+    if (!user || !verifyPassword(password, user.passwordHash)) {
+      return res.status(401).send("E-mail ou senha invalidos.");
+    }
+    if (!user.active) return res.status(403).send("Esta conta esta desativada.");
+
+    const updatedUser = user.passwordHash
+      ? user
+      : await saveStoredUser({
+          ...user,
+          passwordHash: hashPassword(password),
+          passwordUpdatedAt: new Date().toISOString()
+        });
+
+    await audit("auth.login", { userId: updatedUser.id });
+    res.json(createSession(updatedUser));
+  } catch (error) {
+    res.status(500).send(error instanceof Error ? error.message : "Erro ao entrar no sistema.");
+  }
+});
+
+async function requireAuth(req: AuthenticatedRequest, res: express.Response, next: express.NextFunction) {
+  try {
+    if (req.path === "/auth/login" || req.path.startsWith("/webhooks/cal")) return next();
+    const header = req.headers.authorization || "";
+    const token = header.startsWith("Bearer ") ? header.slice("Bearer ".length) : "";
+    const payload = verifyToken(token);
+    if (!payload) return res.status(401).send("Sessao expirada. Entre novamente.");
+
+    const user = (await readUsers()).find((item) => item.id === payload.userId);
+    if (!user || !user.active) return res.status(401).send("Usuario sem acesso ativo.");
+    req.currentUser = publicUser(user);
+    next();
+  } catch (error) {
+    res.status(500).send(error instanceof Error ? error.message : "Erro de autenticacao.");
+  }
+}
+
+function requireAdmin(req: AuthenticatedRequest, res: express.Response): boolean {
+  if (req.currentUser?.role === "Administrador") return true;
+  res.status(403).send("Acesso restrito ao administrador.");
+  return false;
+}
+
+app.use("/api", requireAuth);
+
+app.get("/api/auth/me", async (req: AuthenticatedRequest, res) => {
+  res.json({ user: req.currentUser });
+});
+
+app.post("/api/auth/logout", async (_req, res) => {
+  res.json({ ok: true });
+});
 
 app.get("/api/bootstrap", async (_req, res) => {
   try {
@@ -251,13 +479,14 @@ app.put("/api/patients/bulk", async (req, res) => {
 });
 
 app.put("/api/contacts/bulk", async (req, res) => {
-  const rows = (req.body.contacts || []).map((contact: Contact) => ({
+  const rows = (req.body.contacts || []).map((contact: ContactWithProfessionalIds) => ({
     ...contact,
     normalizedPhone: normalizePhone(contact.phone),
+    professionalIds: uniqueProfessionalIds(contact.professionalIds),
     updatedAt: new Date().toISOString()
   }));
   demoState.contacts = rows;
-  res.json(await replaceTable("contacts", rows));
+  res.json(await replaceContacts(rows));
 });
 
 app.put("/api/appointments/bulk", async (req, res) => {
@@ -266,10 +495,129 @@ app.put("/api/appointments/bulk", async (req, res) => {
   res.json(await replaceTable("appointments_cache", rows));
 });
 
-app.put("/api/users/bulk", async (req, res) => {
-  const rows = req.body.users || [];
+app.put("/api/users/bulk", async (req: AuthenticatedRequest, res) => {
+  if (!requireAdmin(req, res)) return;
+  const storedUsers = await readUsers();
+  const rows = (req.body.users || []).map((user: SystemUser) => {
+    const existing = storedUsers.find((item) => item.id === user.id);
+    return {
+      ...existing,
+      ...user,
+      passwordHash: existing?.passwordHash,
+      passwordUpdatedAt: existing?.passwordUpdatedAt
+    };
+  });
   demoState.users = rows;
-  res.json(await replaceTable("users", rows));
+  res.json(publicUsers(await replaceTable("users", rows)));
+});
+
+app.post("/api/users", async (req: AuthenticatedRequest, res) => {
+  if (!requireAdmin(req, res)) return;
+  const { name, email, role, active = true, password } = req.body as SystemUser & { password?: string };
+  if (!name || !email || !role || !password) return res.status(400).send("Nome, e-mail, perfil e senha sao obrigatorios.");
+  if (password.length < 6) return res.status(400).send("A senha deve ter pelo menos 6 caracteres.");
+
+  const users = await readUsers();
+  if (users.some((user) => user.email.toLowerCase() === email.toLowerCase())) {
+    return res.status(409).send("Este e-mail ja esta cadastrado.");
+  }
+
+  const now = new Date().toISOString();
+  const user: StoredUser = {
+    id: `usr-${Date.now()}`,
+    name,
+    email,
+    role,
+    active,
+    needsPasswordChange: false,
+    passwordHash: hashPassword(password),
+    passwordUpdatedAt: now
+  };
+  await saveStoredUser(user);
+  await audit("user.created", { userId: user.id, createdBy: req.currentUser?.id });
+  res.status(201).json(publicUser(user));
+});
+
+app.patch("/api/users/:id", async (req: AuthenticatedRequest, res) => {
+  if (!requireAdmin(req, res)) return;
+  const users = await readUsers();
+  const user = users.find((item) => item.id === req.params.id);
+  if (!user) return res.status(404).send("Usuario nao encontrado.");
+  if (user.id === req.currentUser?.id && req.body.active === false) {
+    return res.status(400).send("Voce nao pode desativar sua propria conta.");
+  }
+
+  const updated: StoredUser = {
+    ...user,
+    name: req.body.name ?? user.name,
+    email: req.body.email ?? user.email,
+    role: req.body.role ?? user.role,
+    active: req.body.active ?? user.active,
+    needsPasswordChange: req.body.needsPasswordChange ?? user.needsPasswordChange
+  };
+  await saveStoredUser(updated);
+  await audit("user.updated", { userId: updated.id, updatedBy: req.currentUser?.id });
+  res.json(publicUser(updated));
+});
+
+app.patch("/api/users/:id/password", async (req: AuthenticatedRequest, res) => {
+  if (!requireAdmin(req, res)) return;
+  const { password } = req.body as { password?: string };
+  if (!password || password.length < 6) return res.status(400).send("A senha deve ter pelo menos 6 caracteres.");
+
+  const users = await readUsers();
+  const user = users.find((item) => item.id === req.params.id);
+  if (!user) return res.status(404).send("Usuario nao encontrado.");
+
+  const updated = {
+    ...user,
+    needsPasswordChange: false,
+    passwordHash: hashPassword(password),
+    passwordUpdatedAt: new Date().toISOString()
+  };
+  await saveStoredUser(updated);
+  await audit("user.password.updated_by_admin", { userId: updated.id, updatedBy: req.currentUser?.id });
+  res.json(publicUser(updated));
+});
+
+app.delete("/api/users/:id", async (req: AuthenticatedRequest, res) => {
+  if (!requireAdmin(req, res)) return;
+  const users = await readUsers();
+  const user = users.find((item) => item.id === req.params.id);
+  if (!user) return res.status(404).send("Usuario nao encontrado.");
+  if (user.id === req.currentUser?.id) return res.status(400).send("Voce nao pode excluir sua propria conta.");
+
+  const remainingUsers = users.filter((item) => item.id !== user.id);
+  const remainingAdmins = remainingUsers.filter((item) => item.role === "Administrador" && item.active);
+  if (user.role === "Administrador" && remainingAdmins.length === 0) {
+    return res.status(400).send("Nao e permitido excluir o ultimo administrador ativo.");
+  }
+
+  demoState.users = remainingUsers;
+  if (pool) await pool.query("delete from users where id = $1", [user.id]);
+  await audit("user.deleted", { userId: user.id, deletedBy: req.currentUser?.id });
+  res.json({ ok: true });
+});
+
+app.patch("/api/me/password", async (req: AuthenticatedRequest, res) => {
+  const { currentPassword, newPassword } = req.body as { currentPassword?: string; newPassword?: string };
+  if (!currentPassword || !newPassword) return res.status(400).send("Informe a senha atual e a nova senha.");
+  if (newPassword.length < 6) return res.status(400).send("A nova senha deve ter pelo menos 6 caracteres.");
+
+  const users = await readUsers();
+  const user = users.find((item) => item.id === req.currentUser?.id);
+  if (!user) return res.status(404).send("Usuario nao encontrado.");
+  if (!verifyPassword(currentPassword, user.passwordHash)) return res.status(401).send("Senha atual incorreta.");
+
+  const updated = {
+    ...user,
+    needsPasswordChange: false,
+    passwordHash: hashPassword(newPassword),
+    passwordUpdatedAt: new Date().toISOString()
+  };
+  await saveStoredUser(updated);
+  await audit("user.password.updated_self", { userId: updated.id });
+  res.json(publicUser(updated));
 });
 
 app.put("/api/professionals/bulk", async (req, res) => {
@@ -284,6 +632,61 @@ app.put("/api/settings", async (req, res) => {
   if (!pool) return res.json(req.body);
   await upsertRow(pool, "clinic_settings", settings);
   res.json(req.body);
+});
+
+app.post("/api/clinical-reminders", async (req: AuthenticatedRequest, res) => {
+  const now = new Date().toISOString();
+  const reminder: ClinicalReminder = {
+    id: `rem-${Date.now()}`,
+    title: String(req.body.title || "").trim(),
+    description: String(req.body.description || "").trim(),
+    priority: req.body.priority || "Media",
+    status: "Aberto",
+    dueDate: req.body.dueDate || undefined,
+    dueTime: req.body.dueTime || undefined,
+    patientId: req.body.patientId || undefined,
+    professionalId: req.body.professionalId || undefined,
+    createdBy: req.currentUser?.id || "",
+    createdAt: now,
+    updatedAt: now
+  };
+  if (!reminder.title) return res.status(400).send("Titulo do lembrete e obrigatorio.");
+
+  demoState.clinicalReminders = [reminder, ...demoState.clinicalReminders];
+  if (pool) await upsertRow(pool, "clinical_reminders", reminder as unknown as Record<string, unknown>);
+  await audit("clinical_reminder.created", { reminderId: reminder.id, createdBy: req.currentUser?.id });
+  res.status(201).json(reminder);
+});
+
+app.patch("/api/clinical-reminders/:id", async (req: AuthenticatedRequest, res) => {
+  const data = await bootstrap();
+  const existing = data.clinicalReminders.find((item) => item.id === req.params.id);
+  if (!existing) return res.status(404).send("Lembrete nao encontrado.");
+
+  const status = req.body.status ?? existing.status;
+  const updated: ClinicalReminder = {
+    ...existing,
+    title: req.body.title ?? existing.title,
+    description: req.body.description ?? existing.description,
+    priority: req.body.priority ?? existing.priority,
+    status,
+    dueDate: req.body.dueDate || undefined,
+    dueTime: req.body.dueTime || undefined,
+    patientId: req.body.patientId || undefined,
+    professionalId: req.body.professionalId || undefined,
+    updatedAt: new Date().toISOString(),
+    completedAt: status === "Concluido"
+      ? existing.completedAt || new Date().toISOString()
+      : status === "Aberto"
+        ? undefined
+        : existing.completedAt
+  };
+  if (!updated.title.trim()) return res.status(400).send("Titulo do lembrete e obrigatorio.");
+
+  demoState.clinicalReminders = demoState.clinicalReminders.map((item) => item.id === updated.id ? updated : item);
+  if (pool) await upsertRow(pool, "clinical_reminders", updated as unknown as Record<string, unknown>);
+  await audit("clinical_reminder.updated", { reminderId: updated.id, updatedBy: req.currentUser?.id, status: updated.status });
+  res.json(updated);
 });
 
 app.patch("/api/appointments/:id/status", async (req, res) => {
@@ -551,28 +954,111 @@ function mapCalStatus(trigger: string): AppointmentStatus {
   return "Agendado";
 }
 
+function getBookingMetadata(booking: Record<string, unknown>): Record<string, unknown> {
+  const metadata = booking.metadata || (booking.payload as { metadata?: unknown } | undefined)?.metadata;
+  return metadata && typeof metadata === "object" ? metadata as Record<string, unknown> : {};
+}
+
+function getBookingEventTypeId(booking: Record<string, unknown>): number | undefined {
+  const candidates = [
+    booking.eventTypeId,
+    (booking.eventType as { id?: unknown } | undefined)?.id,
+    (booking.eventType as { eventTypeId?: unknown } | undefined)?.eventTypeId
+  ];
+  const value = candidates.find((candidate) => Number(candidate));
+  return value ? Number(value) : undefined;
+}
+
+function getBookingEventTypeSlug(booking: Record<string, unknown>): string {
+  const eventType = booking.eventType as Record<string, unknown> | undefined;
+  const candidates = [
+    eventType?.slug,
+    eventType?.url,
+    eventType?.bookingUrl,
+    booking.eventSlug,
+    booking.slug
+  ];
+  return normalizeCalUsername(candidates.find((candidate) => typeof candidate === "string") as string | undefined);
+}
+
+function getBookingPhone(booking: Record<string, unknown>, attendee: Record<string, unknown>): string {
+  const responses = booking.responses as Record<string, { value?: unknown }> | undefined;
+  const location = booking.location as { optionValue?: unknown } | undefined;
+  const candidates = [
+    attendee.phoneNumber,
+    attendee.phone,
+    responses?.phone?.value,
+    responses?.telefone?.value,
+    responses?.whatsapp?.value,
+    location?.optionValue
+  ];
+  return candidates.find((candidate) => typeof candidate === "string" && candidate.trim()) as string || "";
+}
+
+function findProfessionalForBooking(
+  professionals: Professional[],
+  booking: Record<string, unknown>,
+  metadata: Record<string, unknown>
+) {
+  const eventTypeId = getBookingEventTypeId(booking);
+  if (eventTypeId) {
+    const byEventType = professionals.find((professional) => professional.calEventTypeId === eventTypeId);
+    if (byEventType) return byEventType;
+  }
+
+  const eventSlug = getBookingEventTypeSlug(booking);
+  if (eventSlug) {
+    const bySlug = professionals.find((professional) => {
+      const username = normalizeCalUsername(professional.calUsername);
+      return username === eventSlug || username.endsWith(`/${eventSlug}`) || eventSlug.endsWith(`/${username}`);
+    });
+    if (bySlug) return bySlug;
+  }
+
+  const metadataProfessionalId = typeof metadata.clinicProfessionalId === "string" ? metadata.clinicProfessionalId : "";
+  return metadataProfessionalId
+    ? professionals.find((professional) => professional.id === metadataProfessionalId)
+    : undefined;
+}
+
 app.post("/api/webhooks/cal", async (req, res) => {
   try {
     const trigger = req.body?.triggerEvent || req.body?.type || "";
-    const booking = req.body?.payload || req.body?.data || req.body;
-    const attendee = booking?.attendees?.[0] || {};
-    const phone = attendee.phoneNumber || attendee.phone || booking?.responses?.phone?.value || "";
+    const booking = (req.body?.payload || req.body?.data || req.body) as Record<string, unknown>;
+    const attendee = ((booking?.attendees as Record<string, unknown>[] | undefined)?.[0] || {}) as Record<string, unknown>;
+    const metadata = getBookingMetadata(booking);
+    const phone = getBookingPhone(booking, attendee);
     const normalizedPhone = normalizePhone(phone);
     const data = await bootstrap();
-    const patient = data.patients.find((item) => item.normalizedPhone === normalizedPhone);
-    const professional = data.professionals.find((item) => item.calEventTypeId === booking?.eventTypeId || item.calUsername === booking?.eventType?.slug);
+    const metadataPatientId = typeof metadata.clinicPatientId === "string" ? metadata.clinicPatientId : "";
+    const patient =
+      data.patients.find((item) => item.id === metadataPatientId) ||
+      data.patients.find((item) => item.normalizedPhone === normalizedPhone);
+    const professional = findProfessionalForBooking(data.professionals, booking, metadata);
     const startAt = booking?.startTime || booking?.start || booking?.startAt;
     const endAt = booking?.endTime || booking?.end || booking?.endAt;
 
-    if (normalizedPhone && !data.contacts.some((contact) => contact.normalizedPhone === normalizedPhone)) {
+    if (booking?.uid && startAt && !professional) {
+      await audit("cal.webhook.unmatched_professional", {
+        uid: booking.uid,
+        eventTypeId: getBookingEventTypeId(booking),
+        eventSlug: getBookingEventTypeSlug(booking),
+        metadata
+      });
+      return res.json({ ok: true, ignored: true, reason: "professional_not_identified" });
+    }
+
+    const existingContact = data.contacts.find((contact) => contact.normalizedPhone === normalizedPhone);
+    if (normalizedPhone && !existingContact) {
       const contact: Contact = {
         id: `ctc-${Date.now()}`,
-        name: attendee.name || booking?.title || "Contato Cal.com",
+        name: String(attendee.name || booking?.title || patient?.name || "Contato Cal.com"),
         phone,
         normalizedPhone,
-        email: attendee.email,
+        email: typeof attendee.email === "string" ? attendee.email : patient?.email,
         whatsappOptIn: true,
         patientId: patient?.id,
+        professionalIds: professional?.id ? [professional.id] : [],
         tags: ["cal.com"],
         notes: "Contato criado automaticamente por webhook do Cal.com.",
         source: "cal.com",
@@ -580,31 +1066,41 @@ app.post("/api/webhooks/cal", async (req, res) => {
         updatedAt: new Date().toISOString()
       };
       demoState.contacts.unshift(contact);
-      if (pool) await upsertRow(pool, "contacts", contact as unknown as Record<string, unknown>);
+      if (pool) {
+        await upsertRow(pool, "contacts", contactRow(contact));
+        await syncContactProfessionalIds(pool, contact.id, contact.professionalIds, "cal.com");
+      }
+    } else if (pool && existingContact && professional?.id) {
+      await syncContactProfessionalIds(
+        pool,
+        existingContact.id,
+        uniqueProfessionalIds([...(existingContact.professionalIds || []), professional.id]),
+        "cal.com"
+      );
     }
 
     if (booking?.uid && startAt) {
-      const start = new Date(startAt);
-      const end = endAt ? new Date(endAt) : new Date(start.getTime() + 30 * 60000);
+      const start = new Date(String(startAt));
+      const end = endAt ? new Date(String(endAt)) : new Date(start.getTime() + 30 * 60000);
       const appointment: Appointment = {
         id: `cal-${booking.uid}`,
         patientId: patient?.id || "",
-        patientName: attendee.name || booking?.title || "Paciente Cal.com",
+        patientName: String(attendee.name || booking?.title || patient?.name || "Paciente Cal.com"),
         patientPhone: phone,
-        professionalId: professional?.id || "prof-1",
+        professionalId: professional.id,
         date: start.toISOString().slice(0, 10),
         time: start.toISOString().slice(11, 16),
         endTime: end.toISOString().slice(11, 16),
         duration: Math.max(15, Math.round((end.getTime() - start.getTime()) / 60000)),
-        type: booking?.eventType?.title || "Consulta",
+        type: String((booking?.eventType as { title?: unknown } | undefined)?.title || "Consulta"),
         status: mapCalStatus(trigger),
-        notes: booking?.description || "",
-        calBookingUid: booking.uid,
-        calStatus: booking.status,
+        notes: String(booking?.description || ""),
+        calBookingUid: String(booking.uid),
+        calStatus: typeof booking.status === "string" ? booking.status : undefined,
         source: "cal.com",
         startAt: start.toISOString(),
         endAt: end.toISOString(),
-        timezone: booking?.timeZone || "America/Sao_Paulo"
+        timezone: typeof booking?.timeZone === "string" ? booking.timeZone : "America/Sao_Paulo"
       };
 
       demoState.appointments = [appointment, ...demoState.appointments.filter((item) => item.id !== appointment.id)];

@@ -1,11 +1,20 @@
 import React, { useMemo, useState } from "react";
-import { Contact, Patient } from "../types";
+import { Contact, Patient, Professional } from "../types";
 import { normalizePhone } from "../utils/phone";
 import { CheckCircle2, Link2, MessageCircle, Plus, Search, UserPlus } from "lucide-react";
+
+const normalizeSearchText = (value?: string) => {
+  return (value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .trim();
+};
 
 interface ContactsViewProps {
   contacts: Contact[];
   patients: Patient[];
+  professionals: Professional[];
   onAddContact: (contact: Omit<Contact, "id" | "normalizedPhone" | "createdAt" | "updatedAt">) => void;
   onUpdateContact: (contact: Contact) => void;
   onCreatePatientFromContact: (contact: Contact) => void;
@@ -15,12 +24,14 @@ interface ContactsViewProps {
 export const ContactsView: React.FC<ContactsViewProps> = ({
   contacts,
   patients,
+  professionals,
   onAddContact,
   onUpdateContact,
   onCreatePatientFromContact,
   onNavigate
 }) => {
   const [search, setSearch] = useState("");
+  const [selectedProfessionalId, setSelectedProfessionalId] = useState("global");
   const [showModal, setShowModal] = useState(false);
   const [editing, setEditing] = useState<Contact | null>(null);
   const [name, setName] = useState("");
@@ -29,6 +40,18 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
   const [tags, setTags] = useState("");
   const [notes, setNotes] = useState("");
   const [whatsappOptIn, setWhatsappOptIn] = useState(true);
+  const [professionalIds, setProfessionalIds] = useState<string[]>([]);
+
+  const activeProfessionals = useMemo(
+    () => professionals.filter(professional => professional.active),
+    [professionals]
+  );
+
+  const professionalsById = useMemo(() => {
+    const map = new Map<string, Professional>();
+    professionals.forEach(professional => map.set(professional.id, professional));
+    return map;
+  }, [professionals]);
 
   const patientsByPhone = useMemo(() => {
     const map = new Map<string, Patient>();
@@ -36,13 +59,37 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
     return map;
   }, [patients]);
 
+  const tabOptions = useMemo(() => [
+    { id: "global", label: "Global", count: contacts.length },
+    ...activeProfessionals.map(professional => ({
+      id: professional.id,
+      label: professional.name,
+      count: contacts.filter(contact => (contact.professionalIds || []).includes(professional.id)).length
+    }))
+  ], [activeProfessionals, contacts]);
+
   const filtered = contacts.filter(contact => {
-    const term = search.toLowerCase();
-    return (
-      contact.name.toLowerCase().includes(term) ||
-      contact.phone.includes(search) ||
-      contact.normalizedPhone.includes(search.replace(/\D/g, "")) ||
-      (contact.email || "").toLowerCase().includes(term)
+    const term = normalizeSearchText(search);
+    const digitTerm = normalizePhone(search);
+    const matchedPatient = contact.patientId
+      ? patients.find(patient => patient.id === contact.patientId)
+      : patientsByPhone.get(contact.normalizedPhone);
+    const searchableText = normalizeSearchText([
+      contact.name,
+      contact.email || "",
+      contact.notes,
+      contact.tags.join(" "),
+      matchedPatient?.name || ""
+    ].join(" "));
+    const searchablePhone = normalizePhone(`${contact.phone} ${contact.normalizedPhone} ${matchedPatient?.phone || ""}`);
+    const matchesProfessional =
+      selectedProfessionalId === "global" ||
+      (contact.professionalIds || []).includes(selectedProfessionalId);
+
+    return matchesProfessional && (
+      !term ||
+      searchableText.includes(term) ||
+      Boolean(digitTerm && searchablePhone.includes(digitTerm))
     );
   });
 
@@ -54,6 +101,7 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
     setTags("");
     setNotes("");
     setWhatsappOptIn(true);
+    setProfessionalIds(selectedProfessionalId === "global" ? [] : [selectedProfessionalId]);
     setShowModal(true);
   };
 
@@ -65,7 +113,16 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
     setTags(contact.tags.join(", "));
     setNotes(contact.notes);
     setWhatsappOptIn(contact.whatsappOptIn);
+    setProfessionalIds(contact.professionalIds || []);
     setShowModal(true);
+  };
+
+  const toggleProfessional = (professionalId: string) => {
+    setProfessionalIds(current =>
+      current.includes(professionalId)
+        ? current.filter(id => id !== professionalId)
+        : [...current, professionalId]
+    );
   };
 
   const handleSubmit = (event: React.FormEvent) => {
@@ -76,6 +133,7 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
       email: email || undefined,
       whatsappOptIn,
       patientId: editing?.patientId,
+      professionalIds,
       tags: tags.split(",").map(tag => tag.trim()).filter(Boolean),
       notes,
       source: editing?.source || "manual" as const
@@ -102,7 +160,7 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
             WhatsApp & Relacionamento
           </span>
           <h1 className="text-3xl font-serif italic text-[#5A5A40] font-semibold">Contatos</h1>
-          <p className="text-xs text-[#707060] mt-1">Lista operacional de telefones, leads e vínculos com fichas clínicas.</p>
+          <p className="text-xs text-[#707060] mt-1">Lista de telefone, nomes e vinculos com fichas clinicas 🥼. </p>
         </div>
         <button onClick={openNew} className="self-start md:self-auto bg-[#5A5A40] hover:bg-[#484833] text-white font-semibold text-xs px-5 py-3 rounded-2xl flex items-center gap-2 shadow-md">
           <Plus className="w-4 h-4" />
@@ -116,9 +174,33 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
           type="text"
           placeholder="Buscar por nome, telefone ou e-mail..."
           value={search}
-          onChange={(e) => setSearch(e.target.value)}
+          onChange={(event) => setSearch(event.target.value)}
           className="flex-1 bg-transparent border-0 outline-none placeholder-[#A0A090] text-xs"
         />
+      </div>
+
+      <div className="bg-white border border-[#E5E5E0] rounded-2xl p-2 shadow-sm flex flex-wrap gap-2">
+        {tabOptions.map(option => (
+          <button
+            key={option.id}
+            type="button"
+            onClick={() => setSelectedProfessionalId(option.id)}
+            className={`px-4 py-2 rounded-xl text-xs font-bold transition-all inline-flex items-center gap-2 ${
+              selectedProfessionalId === option.id
+                ? "bg-[#5A5A40] text-white shadow-sm"
+                : "text-[#5A5A40] hover:bg-[#F5F5F0]"
+            }`}
+          >
+            {option.label}
+            <span className={`text-[10px] px-2 py-0.5 rounded-full ${
+              selectedProfessionalId === option.id
+                ? "bg-white/20 text-white"
+                : "bg-[#F2F2E9] text-[#707060]"
+            }`}>
+              {option.count}
+            </span>
+          </button>
+        ))}
       </div>
 
       <div className="bg-white rounded-3xl border border-[#E5E5E0] shadow-sm overflow-hidden">
@@ -128,9 +210,10 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
               <tr>
                 <th className="px-6 py-4">Contato</th>
                 <th className="px-6 py-4">WhatsApp</th>
+                <th className="px-6 py-4">Dentistas</th>
                 <th className="px-6 py-4">Tags</th>
                 <th className="px-6 py-4">Ficha</th>
-                <th className="px-6 py-4 text-right">Ações</th>
+                <th className="px-6 py-4 text-right">Acoes</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-[#F5F5F0]">
@@ -150,8 +233,24 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
                       <p className="font-mono font-bold text-[#5A5A40]">{contact.phone}</p>
                       <p className="text-[10px] text-[#707060] flex items-center gap-1 mt-1">
                         <MessageCircle className="w-3 h-3" />
-                        {contact.whatsappOptIn ? "Pode receber mensagens" : "Não autorizado"}
+                        {contact.whatsappOptIn ? "Pode receber mensagens" : "Nao autorizado"}
                       </p>
+                    </td>
+                    <td className="px-6 py-4">
+                      <div className="flex flex-wrap gap-1">
+                        {(contact.professionalIds || []).length > 0 ? (
+                          (contact.professionalIds || []).map(professionalId => {
+                            const professional = professionalsById.get(professionalId);
+                            return (
+                              <span key={professionalId} className="bg-[#FFF5EF] text-[#9A5A43] border border-[#F0D5C8] px-2 py-0.5 rounded-full text-[9px] font-bold">
+                                {professional?.name || professionalId}
+                              </span>
+                            );
+                          })
+                        ) : (
+                          <span className="text-[10px] text-[#A0A090] font-bold">Global</span>
+                        )}
+                      </div>
                     </td>
                     <td className="px-6 py-4">
                       <div className="flex flex-wrap gap-1">
@@ -205,13 +304,28 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
               <button onClick={() => setShowModal(false)} className="text-xs text-[#707060] font-bold">Fechar</button>
             </div>
             <form onSubmit={handleSubmit} className="space-y-4">
-              <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Nome" className="w-full bg-[#F5F5F0] border border-[#E5E5E0] rounded-2xl px-4 py-3 text-sm" required />
-              <input value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="Telefone / WhatsApp" className="w-full bg-[#F5F5F0] border border-[#E5E5E0] rounded-2xl px-4 py-3 text-sm" required />
-              <input value={email} onChange={(e) => setEmail(e.target.value)} placeholder="E-mail opcional" type="email" className="w-full bg-[#F5F5F0] border border-[#E5E5E0] rounded-2xl px-4 py-3 text-sm" />
-              <input value={tags} onChange={(e) => setTags(e.target.value)} placeholder="Tags separadas por vírgula" className="w-full bg-[#F5F5F0] border border-[#E5E5E0] rounded-2xl px-4 py-3 text-sm" />
-              <textarea value={notes} onChange={(e) => setNotes(e.target.value)} placeholder="Observações" rows={3} className="w-full bg-[#F5F5F0] border border-[#E5E5E0] rounded-2xl px-4 py-3 text-sm" />
+              <input value={name} onChange={(event) => setName(event.target.value)} placeholder="Nome" className="w-full bg-[#F5F5F0] border border-[#E5E5E0] rounded-2xl px-4 py-3 text-sm" required />
+              <input value={phone} onChange={(event) => setPhone(event.target.value)} placeholder="Telefone / WhatsApp" className="w-full bg-[#F5F5F0] border border-[#E5E5E0] rounded-2xl px-4 py-3 text-sm" required />
+              <input value={email} onChange={(event) => setEmail(event.target.value)} placeholder="E-mail opcional" type="email" className="w-full bg-[#F5F5F0] border border-[#E5E5E0] rounded-2xl px-4 py-3 text-sm" />
+              <input value={tags} onChange={(event) => setTags(event.target.value)} placeholder="Tags separadas por virgula" className="w-full bg-[#F5F5F0] border border-[#E5E5E0] rounded-2xl px-4 py-3 text-sm" />
+              <div className="bg-[#F5F5F0] border border-[#E5E5E0] rounded-2xl px-4 py-3 space-y-3">
+                <p className="text-[10px] uppercase tracking-wider font-extrabold text-[#707060]">Agenda da dentista</p>
+                <div className="flex flex-wrap gap-2">
+                  {activeProfessionals.map(professional => (
+                    <label key={professional.id} className="inline-flex items-center gap-2 bg-white border border-[#E5E5E0] rounded-xl px-3 py-2 text-xs font-bold text-[#5A5A40]">
+                      <input
+                        type="checkbox"
+                        checked={professionalIds.includes(professional.id)}
+                        onChange={() => toggleProfessional(professional.id)}
+                      />
+                      {professional.name}
+                    </label>
+                  ))}
+                </div>
+              </div>
+              <textarea value={notes} onChange={(event) => setNotes(event.target.value)} placeholder="Observacoes" rows={3} className="w-full bg-[#F5F5F0] border border-[#E5E5E0] rounded-2xl px-4 py-3 text-sm" />
               <label className="flex items-center gap-2 text-xs font-bold text-[#5A5A40]">
-                <input type="checkbox" checked={whatsappOptIn} onChange={(e) => setWhatsappOptIn(e.target.checked)} />
+                <input type="checkbox" checked={whatsappOptIn} onChange={(event) => setWhatsappOptIn(event.target.checked)} />
                 Autorizado para mensagens no WhatsApp
               </label>
               <div className="flex justify-end gap-3 pt-3">
@@ -225,4 +339,3 @@ export const ContactsView: React.FC<ContactsViewProps> = ({
     </div>
   );
 };
-

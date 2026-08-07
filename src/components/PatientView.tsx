@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { Patient, Appointment, PatientAddress, Contact } from "../types";
+import { Patient, Appointment, PatientAddress, Contact, ClinicalReminder } from "../types";
 import { normalizePhone } from "../utils/phone";
 import { lookupCep } from "../services/cep";
 import {
@@ -19,6 +19,7 @@ import {
   MapPin,
   Loader2,
   Pencil
+  , Bell
 } from "lucide-react";
 
 const formatCpf = (value: string) => {
@@ -49,6 +50,7 @@ interface PatientViewProps {
   onOpenNewAppointmentForPatient: (patientId: string) => void;
   onOpenReturnForPatient: (patientId: string) => void;
   onDeletePatient: (patientId: string) => void;
+  onCreateClinicalReminder: (reminder: Omit<ClinicalReminder, "id" | "status" | "createdBy" | "createdAt" | "updatedAt" | "completedAt">) => Promise<void>;
 }
 
 export const PatientView: React.FC<PatientViewProps> = ({
@@ -59,7 +61,8 @@ export const PatientView: React.FC<PatientViewProps> = ({
   onEditPatient,
   onOpenNewAppointmentForPatient,
   onOpenReturnForPatient,
-  onDeletePatient
+  onDeletePatient,
+  onCreateClinicalReminder
 }) => {
   const [searchQuery, setSearchQuery] = useState("");
   const [selectedPatient, setSelectedPatient] = useState<Patient | null>(patients[0] || null);
@@ -79,6 +82,7 @@ export const PatientView: React.FC<PatientViewProps> = ({
   const [formEmail, setFormEmail] = useState("");
   const [formImportant, setFormImportant] = useState("");
   const [formQuick, setFormQuick] = useState("");
+  const [formAbsencesCount, setFormAbsencesCount] = useState(0);
 
   // Address / CEP autofill states
   const [formCep, setFormCep] = useState("");
@@ -111,6 +115,7 @@ export const PatientView: React.FC<PatientViewProps> = ({
     resetAddressFields();
     setFormImportant("");
     setFormQuick("");
+    setFormAbsencesCount(0);
     setEditingPatientId(null);
   };
 
@@ -130,6 +135,7 @@ export const PatientView: React.FC<PatientViewProps> = ({
     setCepError("");
     setFormImportant(patient.importantNotes || "");
     setFormQuick(patient.quickNotes || "");
+    setFormAbsencesCount(patient.absencesCount || 0);
     setEditingPatientId(patient.id);
     setShowAddModal(true);
   };
@@ -192,7 +198,8 @@ export const PatientView: React.FC<PatientViewProps> = ({
           email: formEmail || undefined,
           address,
           importantNotes: formImportant,
-          quickNotes: formQuick
+          quickNotes: formQuick,
+          absencesCount: Math.max(0, formAbsencesCount)
         });
         if (selectedPatient?.id === editingPatientId) {
           setSelectedPatient({
@@ -204,7 +211,8 @@ export const PatientView: React.FC<PatientViewProps> = ({
             email: formEmail || undefined,
             address,
             importantNotes: formImportant,
-            quickNotes: formQuick
+            quickNotes: formQuick,
+            absencesCount: Math.max(0, formAbsencesCount)
           });
         }
       }
@@ -235,6 +243,23 @@ export const PatientView: React.FC<PatientViewProps> = ({
   const selectedPatientContact = selectedPatient
     ? contacts.find(contact => contact.patientId === selectedPatient.id || contact.normalizedPhone === (selectedPatient.normalizedPhone || normalizePhone(selectedPatient.phone)))
     : null;
+
+  const handleCreateReminderForSelectedPatient = async () => {
+    if (!selectedPatient) return;
+    const title = window.prompt(`Titulo do lembrete para ${selectedPatient.name}`);
+    if (!title) return;
+    const description = window.prompt("Descricao do lembrete (opcional)") || "";
+    try {
+      await onCreateClinicalReminder({
+        title,
+        description,
+        priority: "Media",
+        patientId: selectedPatient.id
+      });
+    } catch (error) {
+      alert(error instanceof Error ? error.message : "Nao foi possivel criar o lembrete.");
+    }
+  };
 
   return (
     <div className="space-y-8 animate-fade-in">
@@ -332,9 +357,18 @@ export const PatientView: React.FC<PatientViewProps> = ({
         <div className="lg:col-span-6">
           {selectedPatient ? (
             <div className="bg-white rounded-[32px] border border-[#E5E5E0] shadow-sm p-6 space-y-6 animate-fade-in">
-              <div className="border-b border-[#F5F5F0] pb-4 space-y-1">
-                <span className="text-[9px] uppercase text-[#C17A63] font-bold tracking-widest">Dossiê Odontológico / Histórico</span>
-                <h3 className="font-serif text-2xl text-[#1A1A1A]">{selectedPatient.name}</h3>
+              <div className="border-b border-[#F5F5F0] pb-4 flex items-start justify-between gap-4">
+                <div className="space-y-1">
+                  <span className="text-[9px] uppercase text-[#C17A63] font-bold tracking-widest">Dossiê Odontológico / Histórico</span>
+                  <h3 className="font-serif text-2xl text-[#1A1A1A]">{selectedPatient.name}</h3>
+                </div>
+                <button
+                  onClick={() => openEditModal(selectedPatient)}
+                  className="shrink-0 inline-flex items-center gap-1.5 px-3 py-2 bg-white text-[#5A5A40] border border-[#D8D8C0] rounded-xl text-[10px] font-bold hover:bg-[#F5F5F0] active:scale-95 transition-all"
+                >
+                  <Pencil className="w-3.5 h-3.5 text-[#C17A63]" />
+                  Editar
+                </button>
               </div>
 
               {/* Patient details indicators */}
@@ -469,6 +503,14 @@ export const PatientView: React.FC<PatientViewProps> = ({
                 >
                   <Pencil className="w-3.5 h-3.5 text-[#C17A63]" />
                   <span>Editar Ficha Cadastral</span>
+                </button>
+
+                <button
+                  onClick={handleCreateReminderForSelectedPatient}
+                  className="w-full flex items-center justify-center gap-1.5 px-4 py-2.5 bg-white text-[#5A5A40] border border-[#D8D8C0] rounded-xl text-xs font-bold hover:bg-[#F5F5F0] active:scale-95 transition-all"
+                >
+                  <Bell className="w-3.5 h-3.5 text-[#C17A63]" />
+                  <span>Novo Lembrete Clinico</span>
                 </button>
 
                 <button
@@ -725,6 +767,21 @@ export const PatientView: React.FC<PatientViewProps> = ({
                   className="w-full bg-[#F5F5F0] border border-[#E5E5E0] rounded-2xl px-4 py-3 text-xs leading-relaxed focus:border-[#5A5A40] focus:ring-1 focus:ring-[#5A5A40] outline-none transition-all"
                 />
               </div>
+
+              {editingPatientId && (
+                <div>
+                  <label className="block text-[11px] font-bold text-[#707060] uppercase tracking-wider mb-1">
+                    Faltas não justificadas
+                  </label>
+                  <input
+                    type="number"
+                    min={0}
+                    value={formAbsencesCount}
+                    onChange={(e) => setFormAbsencesCount(Number(e.target.value || 0))}
+                    className="w-full bg-[#F5F5F0] border border-[#E5E5E0] rounded-2xl px-4 py-3 text-sm focus:border-[#5A5A40] focus:ring-1 focus:ring-[#5A5A40] outline-none transition-all"
+                  />
+                </div>
+              )}
 
               {/* Save */}
               <div className="flex gap-3 pt-4">

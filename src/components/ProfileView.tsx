@@ -4,10 +4,10 @@ import { User, Lock, Mail, Shield, CheckCircle2 } from "lucide-react";
 
 interface ProfileViewProps {
   currentUser: SystemUser;
-  onUpdateUser: (updatedUser: SystemUser) => void;
+  onUpdateMyPassword: (currentPassword: string, newPassword: string) => Promise<void>;
 }
 
-export const ProfileView: React.FC<ProfileViewProps> = ({ currentUser, onUpdateUser }) => {
+export const ProfileView: React.FC<ProfileViewProps> = ({ currentUser, onUpdateMyPassword }) => {
   const [showPasswordChange, setShowPasswordChange] = useState(false);
   const [oldPassword, setOldPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
@@ -15,7 +15,7 @@ export const ProfileView: React.FC<ProfileViewProps> = ({ currentUser, onUpdateU
   const [error, setError] = useState("");
   const [success, setSuccess] = useState(false);
 
-  const handlePasswordChangeSubmit = (e: React.FormEvent) => {
+  const handlePasswordChangeSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError("");
     setSuccess(false);
@@ -35,15 +35,19 @@ export const ProfileView: React.FC<ProfileViewProps> = ({ currentUser, onUpdateU
       return;
     }
 
-    // Success simulation
-    setSuccess(true);
-    setOldPassword("");
-    setNewPassword("");
-    setConfirmPassword("");
-    setTimeout(() => {
-      setShowPasswordChange(false);
-      setSuccess(false);
-    }, 3000);
+    try {
+      await onUpdateMyPassword(oldPassword, newPassword);
+      setSuccess(true);
+      setOldPassword("");
+      setNewPassword("");
+      setConfirmPassword("");
+      setTimeout(() => {
+        setShowPasswordChange(false);
+        setSuccess(false);
+      }, 3000);
+    } catch (error) {
+      setError(error instanceof Error ? error.message : "Nao foi possivel alterar a senha.");
+    }
   };
 
   return (
