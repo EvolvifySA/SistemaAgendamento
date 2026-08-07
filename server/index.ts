@@ -38,6 +38,7 @@ const databaseUrl = process.env.DATABASE_URL;
 const isPostgresConfigured = Boolean(databaseUrl);
 const authSecret = process.env.AUTH_SECRET || "dev-clinic-auth-secret";
 const defaultInitialPassword = process.env.DEFAULT_INITIAL_PASSWORD || "123456";
+const n8nConfirmationSecret = process.env.N8N_CONFIRMATION_SECRET || "dev-n8n-confirmation-secret";
 const sessionTtlMs = 1000 * 60 * 60 * 12;
 
 const pool = isPostgresConfigured
@@ -417,7 +418,7 @@ app.post("/api/auth/login", async (req, res) => {
 
 async function requireAuth(req: AuthenticatedRequest, res: express.Response, next: express.NextFunction) {
   try {
-    if (req.path === "/auth/login" || req.path.startsWith("/webhooks/cal")) return next();
+    if (req.path === "/auth/login" || req.path.startsWith("/webhooks/cal") || req.path.startsWith("/webhooks/whatsapp-confirmation")) return next();
     const header = req.headers.authorization || "";
     const token = header.startsWith("Bearer ") ? header.slice("Bearer ".length) : "";
     const payload = verifyToken(token);
@@ -1111,6 +1112,77 @@ app.post("/api/webhooks/cal", async (req, res) => {
     res.json({ ok: true });
   } catch (error) {
     res.status(500).send(error instanceof Error ? error.message : "Erro ao processar webhook Cal.com.");
+  }
+});
+
+app.post("/api/webhooks/whatsapp-confirmation", async (req, res) => {
+  try {
+    const receivedSecret = String(req.headers["x-n8n-secret"] || "");
+    if (receivedSecret !== n8nConfirmationSecret) {
+      return res.status(401).send("Webhook nao autorizado.");
+    }
+
+    const {
+      calBookingUid,
+      patientPhone,
+      confirmationStatus,
+      confirmationAnswer,
+      answeredAt
+    } = req.body as {
+      calBookingUid?: string;
+      patientPhone?: string;
+      confirmationStatus?: "confirmed" | "declined" | "pending";
+      confirmationAnswer?: string;
+      answeredAt?: string;
+    };
+
+    if (confirmationStatus !== "confirmed" && confirmationStatus !== "declined" && confirmationStatus !== "pending") {
+      return res.status(400).send("Status de confirmacao invalido.");
+    }
+
+    const normalizedPhone = normalizePhone(patientPhone || "");
+    const data = await bootstrap();
+    const candidates = data.appointments.filter((appointment) => {
+      if (calBookingUid && appointment.calBookingUid === calBookingUid) return true;
+      return normalizedPhone && normalizePhone(appointment.patientPhone) === normalizedPhone && appointment.status !== "Cancelado";
+    });
+
+    const appointment = candidates
+      .sort((a, b) => {
+        const aDate = a.startAt || `${a.date}T${a.time || "00:00"}:00`;
+        const bDate = b.startAt || `${b.date}T${b.time || "00:00"}:00`;
+        return new Date(aDate).getTime() - new Date(bDate).getTime();
+      })
+      .find((item) => {
+        const starts = new Date(item.startAt || `${item.date}T${item.time || "00:00"}:00`);
+        return Number.isNaN(starts.getTime()) || starts.getTime() >= Date.now() - 2 * 60 * 60 * 1000;
+      }) || candidates[0];
+
+    if (!appointment) {
+      await audit("whatsapp.confirmation.unmatched_appointment", { calBookingUid, patientPhone, confirmationStatus });
+      return res.json({ ok: true, ignored: true, reason: "appointment_not_found" });
+    }
+
+    const updated: Appointment = {
+      ...appointment,
+      status: confirmationStatus === "confirmed" ? "Confirmado" : appointment.status,
+      confirmationStatus,
+      confirmationAnswer: confirmationAnswer || undefined,
+      confirmationAnsweredAt: answeredAt || new Date().toISOString()
+    };
+
+    demoState.appointments = [updated, ...demoState.appointments.filter((item) => item.id !== updated.id)];
+    if (pool) await upsertRow(pool, "appointments_cache", updated as unknown as Record<string, unknown>);
+    await audit("whatsapp.confirmation.received", {
+      appointmentId: updated.id,
+      calBookingUid: updated.calBookingUid,
+      confirmationStatus,
+      confirmationAnswer
+    });
+
+    res.json({ ok: true, appointment: updated });
+  } catch (error) {
+    res.status(500).send(error instanceof Error ? error.message : "Erro ao processar confirmacao do WhatsApp.");
   }
 });
 

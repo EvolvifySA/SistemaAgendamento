@@ -55,6 +55,9 @@ export interface Appointment {
   notes: string;
   calBookingUid?: string;
   calStatus?: string;
+  confirmationStatus?: "pending" | "confirmed" | "declined";
+  confirmationAnswer?: string;
+  confirmationAnsweredAt?: string;
   source?: "cal.com" | "internal" | "demo";
   startAt?: string;
   endAt?: string;

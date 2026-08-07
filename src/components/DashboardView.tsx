@@ -400,6 +400,12 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                 if (app.status === "Agendado") statusBg = "bg-[#F5EEDD] text-[#63532C]";
                 if (app.status === "Atendido") statusBg = "bg-[#E6EEF4] text-[#2C4A63]";
                 if (app.status === "Faltou") statusBg = "bg-[#FBEBEB] text-[#802B2B]";
+                const confirmationBadge =
+                  app.confirmationStatus === "confirmed"
+                    ? "WhatsApp confirmado"
+                    : app.confirmationStatus === "declined"
+                      ? "Paciente pediu reagendar"
+                      : "";
 
                 return (
                   <div 
@@ -426,6 +432,14 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
                         <span>•</span>
                         <span>{app.patientPhone}</span>
                       </p>
+                      {confirmationBadge && (
+                        <p className={`text-[10px] mt-1 font-bold ${
+                          app.confirmationStatus === "declined" ? "text-red-700" : "text-green-700"
+                        }`}>
+                          {confirmationBadge}
+                          {app.confirmationAnswer ? ` - "${app.confirmationAnswer}"` : ""}
+                        </p>
+                      )}
                     </div>
 
                     <div className="flex items-center gap-3 shrink-0 ml-4">

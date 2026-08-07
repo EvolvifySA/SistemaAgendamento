@@ -34,6 +34,7 @@ services:
       N8N_WEBHOOK_URL: ${N8N_WEBHOOK_URL:-}
       AUTH_SECRET: ${AUTH_SECRET:-dev-clinic-auth-secret}
       DEFAULT_INITIAL_PASSWORD: ${DEFAULT_INITIAL_PASSWORD:-123456}
+      N8N_CONFIRMATION_SECRET: ${N8N_CONFIRMATION_SECRET:-dev-n8n-confirmation-secret}
     ports:
       - "${APP_PORT:-3001}:3001"
 
